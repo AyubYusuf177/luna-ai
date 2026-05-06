@@ -1,0 +1,4 @@
+{
+  "_note": "Mock flight fixture data. Used by mock_flight_search tool in v0.0.5+. Schema mirrors Amadeus/Duffel response shapes for easy Phase 3 swap.",
+  "results": []
+}

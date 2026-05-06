@@ -1,0 +1,4 @@
+{
+  "_note": "Mock hotel fixture data. Used by mock_hotel_search tool in v0.0.7+. Schema mirrors Booking.com/Amadeus Hotels response shapes for easy Phase 3 swap.",
+  "results": []
+}
