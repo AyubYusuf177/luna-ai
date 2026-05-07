@@ -1,8 +1,12 @@
 """
-Tests for POST /simulate — v0.0.2.
+Tests for POST /simulate — v0.0.2 / updated v0.0.3.
 
 Each test resets in-memory state via the autouse fixture so tests
 are fully isolated and order-independent.
+
+v0.0.3 addition: /simulate now routes through the Event Gateway, so
+the event log contains an internal_event_received entry with
+source="simulate_inbound" on every request.
 """
 
 import pytest
@@ -139,6 +143,20 @@ async def test_event_log_new_user_flag_is_true_on_first_message():
         await client.post("/simulate", json=_PAYLOAD)
     identified = [e for e in events.get_log() if e.event_type == "user_identified"]
     assert identified[0].metadata["is_new_user"] is True
+
+
+# ── InternalEvent (v0.0.3) ───────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_simulate_creates_internal_event_with_correct_source():
+    """/simulate must produce an InternalEvent logged as simulate_inbound."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await client.post("/simulate", json=_PAYLOAD)
+    gateway_events = [
+        e for e in events.get_log() if e.event_type == "internal_event_received"
+    ]
+    assert len(gateway_events) == 1
+    assert gateway_events[0].metadata["source"] == "simulate_inbound"
 
 
 @pytest.mark.asyncio
