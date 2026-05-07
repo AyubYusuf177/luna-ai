@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     # Anthropic — filled in before v0.0.4
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-6"
+    # Set true only when ANTHROPIC_API_KEY is also set. False in all tests.
+    use_claude_planner: bool = False
 
     # Scheduler — used from v0.0.8
     scheduler_poll_interval_seconds: int = 120

@@ -1,6 +1,6 @@
 [project]
 name = "luna-ai"
-version = "0.0.3"
+version = "0.0.4"
 description = "Luna AI — SMS-native agentic travel assistant"
 requires-python = ">=3.11"
 dependencies = []
