@@ -1,50 +1,26 @@
 """
-In-memory event logger — v0.0.2.
+luna/events/logger.py — Append-only event logger.
 
-Append-only. Nothing is ever updated or deleted from the log.
-Module-level list acts as the store for v0.1; a persistent backend
-will be added in a later milestone behind the same interface.
+All calls delegate to the active backend (in-memory or SQLite).
 
-Public interface:
+Public interface (unchanged from v0.0.2):
     log(event_type, user_id, metadata)  → EventLogEntry
     get_log()                           → list[EventLogEntry]
     reset()                             → None  [tests only]
 """
 
-from datetime import datetime, timezone
-from uuid import uuid4
-
 from luna.events.schemas import EventLogEntry
+from luna.memory.backend import get_backend
 
-# ── Store state ───────────────────────────────────────────────────────────────
-
-_log: list[EventLogEntry] = []
-
-
-# ── Write ─────────────────────────────────────────────────────────────────────
 
 def log(event_type: str, user_id: str, metadata: dict | None = None) -> EventLogEntry:
-    """Append one event to the log and return it."""
-    entry = EventLogEntry(
-        event_id=str(uuid4()),
-        user_id=user_id,
-        event_type=event_type,
-        timestamp=datetime.now(timezone.utc),
-        metadata=metadata or {},
-    )
-    _log.append(entry)
-    return entry
+    return get_backend().log_event(event_type, user_id, metadata or {})
 
-
-# ── Read ──────────────────────────────────────────────────────────────────────
 
 def get_log() -> list[EventLogEntry]:
-    """Return a copy of the full event log."""
-    return list(_log)
+    return get_backend().get_event_log()
 
-
-# ── Test utility ──────────────────────────────────────────────────────────────
 
 def reset() -> None:
-    """Clear all events. Call from test fixtures only."""
-    _log.clear()
+    """Clear the event log only. Does not affect users, conversations, or tasks."""
+    get_backend().reset_events()

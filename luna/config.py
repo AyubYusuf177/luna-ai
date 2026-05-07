@@ -32,9 +32,11 @@ class Settings(BaseSettings):
     # Scheduler — used from v0.0.8
     scheduler_poll_interval_seconds: int = 120
 
-    # Storage backend — used from v0.0.6
-    storage_backend: str = "memory"
-    database_url: str = ""
+    # Persistence — v0.0.6
+    # luna_memory_backend: "in_memory" (default, tests) or "sqlite" (local dev/prod)
+    luna_memory_backend: str = "in_memory"
+    # Path to the SQLite database file. Ignored when luna_memory_backend=in_memory.
+    luna_db_path: str = "./data/luna.db"
 
     model_config = SettingsConfigDict(
         env_file=".env",
