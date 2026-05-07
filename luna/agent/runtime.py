@@ -5,19 +5,19 @@ The single function handle(event) is what the Event Gateway calls for
 every inbound InternalEvent. It is the replacement for the old
 orchestrator stub and contains the real agent loop.
 
-v0.0.4 runtime loop (9 steps):
+v0.0.5 runtime loop (10 steps):
   1.  Log inbound event.
   2.  Identify or create user.
   3.  Append inbound conversation turn to memory.
   4.  List active tasks for this user.
   5.  Call planner → PlannerOutput.
   6.  Create a new TravelTask or update the most recent active one.
-  7.  Extract reply from PlannerOutput.
-  8.  Append outbound turn to memory.
-  9.  Log outbound event. Return reply.
+  7.  Execute first selected tool (if any) via dispatcher → ToolResult.
+  8.  Compose reply from ToolResult or PlannerOutput fallback.
+  9.  Append outbound turn to memory.
+  10. Log outbound event. Return reply.
 
 Steps added in later milestones:
-  v0.0.5  Tool execution (when planner selects a tool).
   v0.0.7  Policy check + confirmation gate.
   v0.0.7  Response Composer (SMS formatting rules).
   v0.0.8  Proactive outbound path.
@@ -29,6 +29,8 @@ from luna.events import logger as events
 from luna.gateway.schemas import InternalEvent
 from luna.memory import store as memory
 from luna.reasoning import planner
+from luna.tools import dispatcher
+from luna.tools.schemas import ToolRequest, ToolStatus
 
 
 def handle(event: InternalEvent) -> str:
@@ -80,13 +82,29 @@ def handle(event: InternalEvent) -> str:
             "next_action": task.next_action,
         })
 
-    # ── Step 7: Extract reply ─────────────────────────────────────────────────
-    reply = plan.reply_draft
+    # ── Step 7: Execute selected tool (if any) ───────────────────────────────
+    tool_result = None
+    if plan.selected_tools:
+        tool_name = plan.selected_tools[0]
+        tool_result = dispatcher.dispatch(ToolRequest(
+            tool_name=tool_name,
+            args=plan.known_fields,
+        ))
+        events.log("tool_executed", user_id, {
+            "tool_name": tool_name,
+            "status": tool_result.status,
+        })
 
-    # ── Step 8: Append outbound turn ──────────────────────────────────────────
+    # ── Step 8: Compose reply ─────────────────────────────────────────────────
+    if tool_result and tool_result.status == ToolStatus.ok:
+        reply = tool_result.reply_text
+    else:
+        reply = plan.reply_draft
+
+    # ── Step 9: Append outbound turn ──────────────────────────────────────────
     memory.append_turn(user_id, "luna", reply)
 
-    # ── Step 9: Log outbound ──────────────────────────────────────────────────
+    # ── Step 10: Log outbound ─────────────────────────────────────────────────
     events.log("outbound_sms_sent", user_id, {"body": reply})
 
     return reply

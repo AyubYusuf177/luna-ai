@@ -15,6 +15,8 @@ actionable replies. It is the baseline that Claude replaces, not a stub.
 No external API calls happen unless both flags are explicitly set.
 """
 
+import re
+
 from luna.agent.schemas import PlannerOutput, RiskLevel, TaskPattern
 from luna.config import settings
 
@@ -75,59 +77,90 @@ _FLIGHT_KW   = ["flight", "fly", "plane", "airport", "airline", "depart", "arriv
 _HOTEL_KW    = ["hotel", "stay", "accommodation", "hostel", "airbnb", "motel", "resort", "lodge"]
 _EVENTS_KW   = ["event", "concert", "show", "restaurant", "reservation", "ticket", "festival", "tour", "activity"]
 
+# Patterns: "from London to Paris", "to Tokyo", "in Rome"
+_RE_FROM_TO = re.compile(r"\bfrom\s+([a-z ]+?)\s+to\s+([a-z ]+?)(?:\b|$)", re.IGNORECASE)
+_RE_TO      = re.compile(r"\bto\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)")
+_RE_IN      = re.compile(r"\bin\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)")
+
+
+def _extract_known_fields(body: str) -> dict:
+    """Extract location fields from natural language using regex."""
+    fields: dict = {}
+    m = _RE_FROM_TO.search(body)
+    if m:
+        fields["origin"] = m.group(1).strip().title()
+        fields["destination"] = m.group(2).strip().title()
+        return fields
+    m = _RE_TO.search(body)
+    if m:
+        fields["destination"] = m.group(1).strip()
+    m = _RE_IN.search(body)
+    if m:
+        fields["city"] = m.group(1).strip()
+    return fields
+
 
 def _run_fallback(body: str) -> PlannerOutput:
     b = body.lower()
+    known = _extract_known_fields(body)
 
     if any(kw in b for kw in _WEATHER_KW):
+        missing = [f for f in ["city", "date"] if f not in known]
         return PlannerOutput(
             goal=body,
             task_pattern=TaskPattern.answer_with_context,
-            known_fields={},
-            missing_fields=["city", "date"],
+            known_fields=known,
+            missing_fields=missing,
             candidate_tools=["weather_lookup"],
-            selected_tools=[],
+            selected_tools=["weather_lookup"] if "city" in known else [],
             risk_level=RiskLevel.low,
-            next_action="ask_clarification",
+            next_action="execute_tool" if "city" in known else "ask_clarification",
             reply_draft="I can check travel weather for that. What city and date should I use?",
         )
 
     if any(kw in b for kw in _FLIGHT_KW):
+        all_fields = ["origin", "destination", "depart_date", "return_date", "passengers"]
+        missing = [f for f in all_fields if f not in known]
+        can_search = "origin" in known and "destination" in known
         return PlannerOutput(
             goal=body,
             task_pattern=TaskPattern.search_and_compare,
-            known_fields={},
-            missing_fields=["origin", "destination", "depart_date", "return_date", "passengers"],
+            known_fields=known,
+            missing_fields=missing,
             candidate_tools=["flight_search"],
-            selected_tools=[],
+            selected_tools=["flight_search"] if can_search else [],
             risk_level=RiskLevel.low,
-            next_action="ask_clarification",
+            next_action="execute_tool" if can_search else "ask_clarification",
             reply_draft="I can help compare flights. What route and dates should I search?",
         )
 
     if any(kw in b for kw in _HOTEL_KW):
+        all_fields = ["city", "check_in", "check_out", "guests", "budget"]
+        missing = [f for f in all_fields if f not in known]
         return PlannerOutput(
             goal=body,
             task_pattern=TaskPattern.search_and_compare,
-            known_fields={},
-            missing_fields=["city", "check_in", "check_out", "guests", "budget"],
+            known_fields=known,
+            missing_fields=missing,
             candidate_tools=["hotel_search"],
-            selected_tools=[],
+            selected_tools=["hotel_search"] if "city" in known else [],
             risk_level=RiskLevel.low,
-            next_action="ask_clarification",
+            next_action="execute_tool" if "city" in known else "ask_clarification",
             reply_draft="I can help compare hotels. What city, dates, and budget should I use?",
         )
 
     if any(kw in b for kw in _EVENTS_KW):
+        all_fields = ["city", "dates", "event_type"]
+        missing = [f for f in all_fields if f not in known]
         return PlannerOutput(
             goal=body,
             task_pattern=TaskPattern.search_and_compare,
-            known_fields={},
-            missing_fields=["city", "dates", "event_type"],
+            known_fields=known,
+            missing_fields=missing,
             candidate_tools=["events_search"],
-            selected_tools=[],
+            selected_tools=["events_search"] if "city" in known else [],
             risk_level=RiskLevel.low,
-            next_action="ask_clarification",
+            next_action="execute_tool" if "city" in known else "ask_clarification",
             reply_draft="I can help find travel events. Which city and dates should I check?",
         )
 
