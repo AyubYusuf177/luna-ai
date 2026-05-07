@@ -1,33 +1,33 @@
 """
 luna/agent/runtime.py — Agent Runtime Kernel.
 
-The single function handle(event) is what the Event Gateway calls for
-every inbound InternalEvent. It is the replacement for the old
-orchestrator stub and contains the real agent loop.
-
-v0.0.5 runtime loop (10 steps):
+v0.0.7 runtime loop (13 steps):
   1.  Log inbound event.
   2.  Identify or create user.
-  3.  Append inbound conversation turn to memory.
-  4.  List active tasks for this user.
-  5.  Call planner → PlannerOutput.
-  6.  Create a new TravelTask or update the most recent active one.
-  7.  Execute first selected tool (if any) via dispatcher → ToolResult.
-  8.  Compose reply from ToolResult or PlannerOutput fallback.
-  9.  Append outbound turn to memory.
-  10. Log outbound event. Return reply.
+  3.  Append inbound conversation turn.
+  4.  Policy: check STOP/START → early return if command.
+  5.  Policy: check inbound for sensitive data → early return if blocked.
+  6.  Confirmation: check YES/NO against pending confirmation → early return if resolved.
+  7.  List active tasks for this user.
+  8.  Call planner → PlannerOutput.
+  9.  Create a new TravelTask or update the most recent active one.
+  10. Execute first selected tool (if any) via dispatcher → ToolResult.
+  11. Policy: check outbound reply for fake booking claims.
+  12. Compose: format reply through Response Composer.
+  13. Append outbound turn, log, return reply.
 
 Steps added in later milestones:
-  v0.0.7  Policy check + confirmation gate.
-  v0.0.7  Response Composer (SMS formatting rules).
   v0.0.8  Proactive outbound path.
 """
 
 from luna.agent import task_manager
 from luna.agent.schemas import TravelTask
+from luna.composer import response_composer as composer
+from luna.confirmation import resolver as confirmation_resolver
 from luna.events import logger as events
 from luna.gateway.schemas import InternalEvent
 from luna.memory import store as memory
+from luna.policy import policy
 from luna.reasoning import planner
 from luna.tools import dispatcher
 from luna.tools.schemas import ToolRequest, ToolStatus
@@ -35,7 +35,7 @@ from luna.tools.schemas import ToolRequest, ToolStatus
 
 def handle(event: InternalEvent) -> str:
     """
-    Run the agent loop for one InternalEvent and return Luna's reply.
+    Run the agent loop for one InternalEvent and return Luna's SMS reply.
 
     Safe to call from any source (simulate, Twilio, scheduler).
     """
@@ -55,13 +55,36 @@ def handle(event: InternalEvent) -> str:
     # ── Step 3: Append inbound turn ───────────────────────────────────────────
     memory.append_turn(user_id, "user", body)
 
-    # ── Step 4: List active tasks ─────────────────────────────────────────────
+    # ── Step 4: Policy — STOP / START ────────────────────────────────────────
+    inbound_decision = policy.check_inbound(body)
+
+    if inbound_decision.command in ("stop", "start"):
+        events.log("policy_command", user_id, {"command": inbound_decision.command})
+        return _send(user_id, inbound_decision.rewritten_reply)
+
+    # ── Step 5: Policy — sensitive data block ────────────────────────────────
+    if not inbound_decision.allowed:
+        events.log("policy_blocked_inbound", user_id, {"reason": inbound_decision.reason})
+        return _send(user_id, inbound_decision.rewritten_reply)
+
+    # ── Step 6: Confirmation — YES / NO resolution ────────────────────────────
+    confirmation_result = confirmation_resolver.resolve_inbound(user_id, body)
+    if confirmation_result and confirmation_result.handled:
+        status = (
+            confirmation_result.confirmation.status
+            if confirmation_result.confirmation
+            else "no_pending"
+        )
+        events.log("confirmation_resolved", user_id, {"status": status})
+        return _send(user_id, confirmation_result.reply)
+
+    # ── Step 7: List active tasks ─────────────────────────────────────────────
     active_tasks = task_manager.list_active_tasks(user_id)
 
-    # ── Step 5: Call planner ──────────────────────────────────────────────────
+    # ── Step 8: Call planner ──────────────────────────────────────────────────
     plan = planner.run(body=body, user_profile=user, active_tasks=active_tasks)
 
-    # ── Step 6: Create or update TravelTask ───────────────────────────────────
+    # ── Step 9: Create or update TravelTask ───────────────────────────────────
     if active_tasks:
         task = _update_task(active_tasks[-1], plan)
         events.log("task_updated", user_id, {
@@ -82,7 +105,7 @@ def handle(event: InternalEvent) -> str:
             "next_action": task.next_action,
         })
 
-    # ── Step 7: Execute selected tool (if any) ───────────────────────────────
+    # ── Step 10: Execute selected tool (if any) ───────────────────────────────
     tool_result = None
     if plan.selected_tools:
         tool_name = plan.selected_tools[0]
@@ -95,22 +118,38 @@ def handle(event: InternalEvent) -> str:
             "status": tool_result.status,
         })
 
-    # ── Step 8: Compose reply ─────────────────────────────────────────────────
-    if tool_result and tool_result.status == ToolStatus.ok:
-        reply = tool_result.reply_text
-    else:
-        reply = plan.reply_draft
+    raw_reply = (
+        tool_result.reply_text
+        if tool_result and tool_result.status == ToolStatus.ok
+        else plan.reply_draft
+    )
 
-    # ── Step 9: Append outbound turn ──────────────────────────────────────────
-    memory.append_turn(user_id, "luna", reply)
+    # ── Step 11: Policy — outbound reply check ────────────────────────────────
+    outbound_decision = policy.check_outbound(raw_reply)
+    if not outbound_decision.allowed:
+        events.log("policy_blocked_outbound", user_id, {"reason": outbound_decision.reason})
 
-    # ── Step 10: Log outbound ─────────────────────────────────────────────────
-    events.log("outbound_sms_sent", user_id, {"body": reply})
+    # ── Step 12: Compose reply ────────────────────────────────────────────────
+    composed = composer.compose(
+        raw_reply,
+        policy_decision=outbound_decision if not outbound_decision.allowed else None,
+    )
 
-    return reply
+    # ── Step 13: Log outbound and return ─────────────────────────────────────
+    memory.append_turn(user_id, "luna", composed.body)
+    events.log("outbound_sms_sent", user_id, {"body": composed.body})
+    return composed.body
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _send(user_id: str, reply: str) -> str:
+    """Compose, log, and return a reply for early-exit paths."""
+    composed = composer.compose(reply)
+    memory.append_turn(user_id, "luna", composed.body)
+    events.log("outbound_sms_sent", user_id, {"body": composed.body})
+    return composed.body
+
 
 def _update_task(task: TravelTask, plan) -> TravelTask:
     """Merge a PlannerOutput into an existing TravelTask and persist it."""
