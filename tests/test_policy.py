@@ -165,6 +165,39 @@ def test_hello_message_is_allowed():
     assert d.allowed is True
 
 
+# ── Regression: 'nin' in 'happening' must not trigger passport block ──────────
+
+def test_events_switzerland_not_blocked():
+    d = check_inbound("what events are happening in Switzerland next month")
+    assert d.allowed is True
+
+
+def test_events_switzerland_not_passport_blocked():
+    d = check_inbound("what events are happening in Switzerland next month")
+    assert d.command is None
+    assert "passport" not in (d.reason or "").lower()
+
+
+def test_happening_word_not_blocked():
+    d = check_inbound("what is happening in Rome this weekend")
+    assert d.allowed is True
+
+
+def test_planning_word_not_blocked():
+    d = check_inbound("I am planning a trip to Berlin")
+    assert d.allowed is True
+
+
+def test_nin_standalone_is_blocked():
+    d = check_inbound("my nin is AB123456C")
+    assert d.allowed is False
+
+
+def test_ssn_standalone_is_blocked():
+    d = check_inbound("my ssn is 123-45-6789")
+    assert d.allowed is False
+
+
 # ── Outbound policy: fake booking detection ───────────────────────────────────
 
 def test_check_outbound_blocks_i_booked_it():
@@ -285,3 +318,17 @@ async def test_simulate_events_still_works():
         )
     reply = response.json()["reply"]
     assert "Madrid" in reply or "event" in reply.lower() or "concert" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_simulate_events_switzerland_not_blocked():
+    """Regression: 'happening' contains 'nin'; must not trigger passport block."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/simulate",
+            json={"from_number": _NUMBER, "body": "what events are happening in Switzerland next month"},
+        )
+    reply = response.json()["reply"]
+    assert "passport" not in reply.lower()
+    assert "private" not in reply.lower()
+    assert "Switzerland" in reply or "event" in reply.lower()

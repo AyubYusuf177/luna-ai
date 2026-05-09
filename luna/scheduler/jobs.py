@@ -13,10 +13,10 @@ from luna.gateway.schemas import EventSource, InternalEvent
 from luna.scheduler.schemas import TriggerType
 
 _PREFIXES: dict[TriggerType, str] = {
-    TriggerType.price_drop: "Price alert",
+    TriggerType.price_drop: "Price drop",
     TriggerType.check_in_reminder: "Check-in reminder",
-    TriggerType.weather_change: "Weather update",
-    TriggerType.task_follow_up: "Follow-up",
+    TriggerType.weather_change: "Weather heads-up",
+    TriggerType.task_follow_up: "Quick follow-up",
 }
 
 

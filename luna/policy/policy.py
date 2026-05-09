@@ -59,6 +59,18 @@ _FAKE_BOOKING_RES = [
 ]
 
 
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _kw_match(text: str, keywords: list[str]) -> bool:
+    """
+    Return True if any keyword appears as a whole word or phrase in text.
+
+    Uses \b word boundaries so short abbreviations like 'nin' or 'ssn'
+    don't false-positive on words like 'happening' or 'lesson'.
+    """
+    return any(re.search(r'\b' + re.escape(kw) + r'\b', text) for kw in keywords)
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def check_inbound(body: str) -> PolicyDecision:
@@ -91,7 +103,7 @@ def check_inbound(body: str) -> PolicyDecision:
             ),
         )
 
-    if any(kw in stripped for kw in _PASSPORT_KW):
+    if _kw_match(stripped, _PASSPORT_KW):
         return PolicyDecision(
             allowed=False,
             reason="Passport or national ID data detected in user message",
@@ -113,7 +125,7 @@ def check_inbound(body: str) -> PolicyDecision:
             ),
         )
 
-    if any(kw in stripped for kw in _PAYMENT_KW):
+    if _kw_match(stripped, _PAYMENT_KW):
         return PolicyDecision(
             allowed=False,
             reason="Payment keyword detected in user message",

@@ -321,7 +321,7 @@ async def test_simulate_proactive_send_includes_message():
 async def test_simulate_proactive_send_message_has_prefix():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post("/simulate/proactive", json=_PROACTIVE_PAYLOAD)
-    assert "Price alert" in response.json()["message"]
+    assert "Price drop" in response.json()["message"]
 
 
 @pytest.mark.asyncio
