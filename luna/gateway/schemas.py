@@ -17,6 +17,8 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 
+
+
 class EventSource(str, Enum):
     simulate_inbound = "simulate_inbound"
     sms_inbound = "sms_inbound"
@@ -51,3 +53,22 @@ class SimulateRequest(BaseModel):
 class SimulateResponse(BaseModel):
     from_number: str
     reply: str
+
+
+# ── HTTP API schemas for /simulate/proactive ──────────────────────────────────
+
+class SimulateProactiveRequest(BaseModel):
+    user_id: str               # E.164 phone number
+    trigger_type: str          # TriggerType value
+    message: str               # Raw message body (prefix added by build_message)
+    proactive_opt_in: bool = True
+    opted_out: bool = False
+    send_window_start: int = 8
+    send_window_end: int = 21
+
+
+class SimulateProactiveResponse(BaseModel):
+    decision: str              # "send" | "defer" | "suppress"
+    reason: str
+    message: str | None = None
+    retry_at: datetime | None = None

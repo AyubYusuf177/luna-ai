@@ -20,8 +20,17 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from luna.channels import simulator as simulator_channel
 from luna.channels import twilio as twilio_channel
 from luna.config import settings
+from luna.events import logger as events
 from luna.gateway import event_gateway
-from luna.gateway.schemas import SimulateRequest, SimulateResponse
+from luna.gateway.schemas import (
+    SimulateProactiveRequest,
+    SimulateProactiveResponse,
+    SimulateRequest,
+    SimulateResponse,
+)
+from luna.scheduler import jobs as scheduler_jobs
+from luna.scheduler import proactive_engine
+from luna.scheduler.schemas import ProactiveCandidate, ProactiveDecisionType, TriggerType
 
 router = APIRouter()
 
@@ -43,6 +52,46 @@ async def simulate(request: SimulateRequest) -> SimulateResponse:
     )
     reply = event_gateway.handle(event)
     return SimulateResponse(from_number=request.from_number, reply=reply)
+
+
+# ── /simulate/proactive — Proactive engine test harness ───────────────────────
+
+@router.post("/simulate/proactive", response_model=SimulateProactiveResponse, tags=["dev"])
+async def simulate_proactive(request: SimulateProactiveRequest) -> SimulateProactiveResponse:
+    """
+    Proactive engine simulator for development and testing.
+
+    Builds a ProactiveCandidate from the request, runs it through the
+    decision gate, and returns the decision without requiring a real
+    scheduler or APScheduler to be running.
+    """
+    trigger_type = TriggerType(request.trigger_type)
+    formatted_message = scheduler_jobs.build_message(trigger_type, request.message)
+
+    candidate = ProactiveCandidate(
+        user_id=request.user_id,
+        trigger_type=trigger_type,
+        message=formatted_message,
+        proactive_opt_in=request.proactive_opt_in,
+        opted_out=request.opted_out,
+        send_window_start=request.send_window_start,
+        send_window_end=request.send_window_end,
+    )
+
+    decision = proactive_engine.evaluate(candidate)
+
+    if decision.decision == ProactiveDecisionType.send:
+        events.log("proactive_sent", request.user_id, {
+            "trigger_type": request.trigger_type,
+            "message": formatted_message,
+        })
+
+    return SimulateProactiveResponse(
+        decision=decision.decision,
+        reason=decision.reason,
+        message=decision.message,
+        retry_at=decision.retry_at,
+    )
 
 
 # ── /twilio/sms — Twilio inbound SMS webhook ──────────────────────────────────
