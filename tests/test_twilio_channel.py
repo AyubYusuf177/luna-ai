@@ -119,14 +119,65 @@ async def test_validation_re_enabled_after_monkeypatch(monkeypatch):
     assert config_module.settings.twilio_validate_signatures is False
 
 
+# ── TwiML response ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_twilio_webhook_returns_xml_content_type():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/twilio/sms", data=_FORM)
+    assert "xml" in response.headers["content-type"].lower()
+
+
+@pytest.mark.asyncio
+async def test_twilio_webhook_response_contains_twiml_root():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/twilio/sms", data=_FORM)
+    assert "<Response>" in response.text
+
+
+@pytest.mark.asyncio
+async def test_twilio_webhook_response_contains_message_tag():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/twilio/sms", data=_FORM)
+    assert "<Message>" in response.text
+
+
+@pytest.mark.asyncio
+async def test_twilio_webhook_twiml_contains_reply_text():
+    form = {"From": _NUMBER, "Body": "weather in Rome"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/twilio/sms", data=form)
+    assert "Rome" in response.text or "weather" in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_twilio_webhook_twiml_is_parseable_xml():
+    import xml.etree.ElementTree as ET
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/twilio/sms", data=_FORM)
+    root = ET.fromstring(response.text)
+    assert root.tag == "Response"
+    assert root.find("Message") is not None
+
+
+@pytest.mark.asyncio
+async def test_twilio_webhook_twiml_message_is_non_empty():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/twilio/sms", data=_FORM)
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(response.text)
+    assert len(root.find("Message").text) > 0
+
+
 # ── No real API calls ─────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_no_twilio_api_calls_without_credentials():
     """
-    send_reply() is a no-op when credentials are absent.
-    The test completing without error proves no real API call was attempted
-    (a real call with empty credentials would raise a Twilio AuthError).
+    With TwiML responses, the reply is delivered by Twilio via the response
+    body — no outbound API credentials are needed for the basic SMS loop.
+    The test completing without error proves no real API call was attempted.
     """
     assert config_module.settings.twilio_account_sid == ""
     assert config_module.settings.twilio_auth_token == ""

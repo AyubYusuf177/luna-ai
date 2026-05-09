@@ -8,7 +8,7 @@ Luna is not a chatbot. Luna is a persistent travel operator that lives inside SM
 
 ## What Luna is not yet
 
-Luna v0.1.0 is a demo-ready foundation. The following are intentionally out of scope until later phases:
+Luna v0.1.1 is a demo-ready foundation. The following are intentionally out of scope until later phases:
 
 - **No real bookings.** Flight, hotel, and event searches return mock data.
 - **No real APIs.** No Amadeus, Duffel, Booking.com, or Skyscanner integration.
@@ -129,6 +129,7 @@ ProactiveCandidate
 | v0.0.7  | Policy layer + Response Composer + Confirmation System | ✅ Done |
 | v0.0.8  | Proactive Engine — 6-check decision gate + /simulate/proactive | ✅ Done |
 | v0.1.0  | Demo-ready — hardening, README, demo script | ✅ Done |
+| v0.1.1  | Twilio SMS hardening — TwiML responses, ngrok guide | ✅ Done |
 
 ---
 
@@ -212,7 +213,7 @@ curl http://localhost:8000/health
 ```
 
 ```json
-{"status": "ok", "version": "0.1.0"}
+{"status": "ok", "version": "0.1.1"}
 ```
 
 ---
@@ -415,32 +416,100 @@ The Claude planner only activates when both variables are set. Tests always use 
 
 ### Twilio SMS (real device testing)
 
-1. Create a Twilio account at [console.twilio.com](https://console.twilio.com) and buy a number.
-2. Set credentials in `.env`:
+Luna uses **TwiML responses** to deliver SMS replies. When Twilio calls `/twilio/sms`, Luna returns an XML response body and Twilio delivers the reply automatically — no outbound API credentials are needed for the basic request-response loop.
+
+#### Step-by-step local setup
+
+**1. Install ngrok** (one-time)
 
 ```bash
-TWILIO_ACCOUNT_SID=ACxxxx
-TWILIO_AUTH_TOKEN=xxxx
-TWILIO_PHONE_NUMBER=+14155552671
+# macOS with Homebrew
+brew install ngrok/ngrok/ngrok
+
+# Or download from https://ngrok.com/download
 ```
 
-3. Expose the local server:
+**2. Start the Luna server**
+
+```bash
+source .venv/bin/activate
+uvicorn luna.main:app --reload
+```
+
+**3. Start ngrok in a separate terminal**
 
 ```bash
 ngrok http 8000
 ```
 
-4. In the Twilio console, set the inbound webhook for your number:
+ngrok prints a public HTTPS URL like `https://abc123.ngrok-free.app`. Copy it.
 
-```
-POST https://<ngrok-id>.ngrok-free.app/twilio/sms
+**4. Set credentials in `.env`** (Twilio credentials are optional for local dev — TwiML works without them)
+
+```bash
+TWILIO_ACCOUNT_SID=ACxxxx        # from console.twilio.com
+TWILIO_AUTH_TOKEN=xxxx
+TWILIO_PHONE_NUMBER=+14155552671  # your Twilio number in E.164 format
+TWILIO_VALIDATE_SIGNATURES=false  # keep false during local dev
 ```
 
-5. Enable signature validation in production:
+**5. Set the webhook in Twilio Console**
+
+1. Go to [Twilio Console → Phone Numbers → Manage → Active Numbers](https://console.twilio.com/us1/develop/phone-numbers/manage/incoming)
+2. Click your number
+3. Under **Messaging → "A Message Comes In"**:
+   - Type: **Webhook**
+   - URL: `https://abc123.ngrok-free.app/twilio/sms`
+   - Method: **HTTP POST**
+4. Save
+
+**6. Run the setup helper script**
+
+```bash
+bash scripts/twilio_local.sh
+```
+
+The script checks whether Luna and ngrok are running, prints the exact webhook URL to paste into Twilio Console, and lists the most common troubleshooting steps.
+
+**7. Send a test SMS**
+
+Text your Twilio number from your phone. Luna replies within a few seconds.
+
+#### Verify the TwiML response directly
+
+```bash
+curl -s -X POST http://localhost:8000/twilio/sms \
+  -d "From=%2B447700900001&Body=flights+from+London+to+Tokyo"
+```
+
+Expected response — Twilio receives this and delivers it as an SMS:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<Response><Message>Flights London→Tokyo: BA 08:00 £189 · EZY 13:30 £124. Which would you like?</Message></Response>
+```
+
+#### Signature validation (production only)
+
+Keep `TWILIO_VALIDATE_SIGNATURES=false` during local development. Enable it only when deploying to a stable public URL:
 
 ```bash
 TWILIO_VALIDATE_SIGNATURES=true
 ```
+
+With validation enabled, every inbound webhook request must carry a valid `X-Twilio-Signature` header. Requests without it are rejected with HTTP 403.
+
+#### Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| `address already in use` on port 8000 | `lsof -ti :8000 \| xargs kill -9` |
+| ngrok URL changed after restart | Update the webhook URL in Twilio Console — every new ngrok session gets a new URL (upgrade to ngrok paid for a stable domain) |
+| Twilio webhook not firing | Check **Twilio Console → Monitor → Logs → Errors**. Verify the ngrok URL is reachable: `curl https://<ngrok-url>/health` |
+| Reply never arrives on phone | Check the ngrok web UI at `http://localhost:4040` — it shows every request/response Twilio made to your server |
+| HTTP 403 from webhook | Either `TWILIO_VALIDATE_SIGNATURES=true` with a wrong/missing signature, or `TWILIO_AUTH_TOKEN` is empty. Set `TWILIO_VALIDATE_SIGNATURES=false` for local dev |
+| Missing credentials warning | Without `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`, TwiML responses still work — the reply is delivered by Twilio from the response body. Credentials are only needed for proactive outbound messages |
+| Twilio sends two replies | This should not happen with TwiML. Ensure `send_reply()` is not being called from outside the webhook handler |
 
 ---
 
