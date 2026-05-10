@@ -32,10 +32,10 @@ async def test_health_returns_expected_body():
 
 
 @pytest.mark.asyncio
-async def test_health_returns_version_011():
+async def test_health_returns_version_020():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/health")
-    assert response.json()["version"] == "0.1.1"
+    assert response.json()["version"] == "0.2.0"
 
 
 def test_demo_script_exists():

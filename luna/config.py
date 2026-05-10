@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     # Anthropic — filled in before v0.0.4
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-6"
+    anthropic_max_tokens: int = 1024
     # Set true only when ANTHROPIC_API_KEY is also set. False in all tests.
     use_claude_planner: bool = False
 

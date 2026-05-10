@@ -1,18 +1,20 @@
 """
-luna/reasoning/planner.py — Travel Planner.
+luna/reasoning/planner.py — Travel Planner (v0.2.0).
 
 Single public function: run(body, user_profile, active_tasks) → PlannerOutput.
 
 Two implementations selected at runtime:
-  1. Claude planner  — calls Claude API with tool use to get structured output.
+  1. Claude planner  — Calls Claude with tool-use to get a validated PlannerOutput.
                        Used when USE_CLAUDE_PLANNER=true AND ANTHROPIC_API_KEY is set.
-  2. Fallback planner — deterministic keyword matching. Always available.
+                       Retries once with a stricter repair prompt on validation failure.
+                       Falls back to the deterministic planner if both attempts fail.
+  2. Fallback planner — Deterministic keyword + regex matching. Always available.
                         Used in all tests and local dev by default.
 
-The fallback is not a toy. It covers the common travel intents and produces
-actionable replies. It is the baseline that Claude replaces, not a stub.
-
-No external API calls happen unless both flags are explicitly set.
+Design notes:
+  - _call_claude_once() is a module-level function so tests can patch it directly.
+  - No real API call happens unless both flags are set.
+  - planner_fallback_used event is logged whenever Claude fails.
 """
 
 import re
@@ -20,37 +22,148 @@ import re
 from luna.agent.schemas import PlannerOutput, RiskLevel, TaskPattern
 from luna.config import settings
 
-# ── System prompt (used by Claude planner only) ───────────────────────────────
+# ── System prompt ─────────────────────────────────────────────────────────────
 
 _SYSTEM_PROMPT = """
-You are Luna's travel planning engine. You receive an inbound SMS message from
-a user and must produce a structured plan for how Luna should respond next.
+You are Luna's travel planning engine. You receive an inbound SMS message from a
+user and must call the plan_travel_action tool with a structured plan.
 
-Luna is an SMS-native agentic travel assistant. She helps users plan flights,
-hotels, activities, and trips entirely through SMS. She never claims to have
-booked something unless the system actually did it.
+== LUNA'S IDENTITY ==
+Luna is an SMS-native agentic travel OPERATOR — not a chatbot, not a workflow
+wizard. She understands flexible, ambiguous, real-world travel requests and turns
+them into actionable plans. She works in the travel domain only.
 
-Task patterns:
-- answer_with_context:          Answer directly from available information.
-- ask_clarification:            Ask for missing information before acting.
-- search_and_compare:           Search for options and present them (flights, hotels).
-- monitor_and_alert:            Watch for a condition and notify (price drop, availability).
-- booking_handoff:              Send a booking link to the user.
-- modify_saved_trip:            Update an existing saved trip or itinerary.
-- confirmation_required_action: An action is ready but requires explicit YES/NO.
+== YOUR JOB ==
+Analyse the user's message (and any active-task context provided). Then call
+plan_travel_action with all required fields.
 
-Available tools: weather_lookup, events_search, flight_search, hotel_search,
-maps_places, booking_handoff_link, ground_transport_stub, memory_search, memory_write.
+goal            — The user's travel goal restated in one clear sentence.
+task_pattern    — The most appropriate pattern (see list below).
+known_fields    — Every field you can extract from the message or context.
+                  Extract as much as possible: cities, dates, budgets, duration,
+                  passenger counts, preferences, constraints, exclusions.
+missing_fields  — Fields you still need before you can act. List only the ones
+                  you actually need for the selected tool or next action.
+candidate_tools — All tools relevant to this goal (may be more than one).
+selected_tools  — Only tools you can call RIGHT NOW because required args exist.
+                  Empty if any required arg is missing.
+risk_level      — low (search/info), medium (saves state), high (booking action).
+next_action     — One of: execute_tool | ask_clarification | create_confirmation | send_reply
+reply_draft     — The SMS reply. Under 280 characters. No greetings or openers.
+                  Direct, helpful, specific. Ask for ONE missing field at a time.
 
-Risk levels: low (information/search), medium (saves state), high (bookings).
+== TASK PATTERNS ==
+answer_with_context          Use when you can answer directly (weather for a known city,
+                             simple factual questions about travel).
+ask_clarification            A required field is missing. Ask for exactly one field.
+search_and_compare           Find and surface options: flights, hotels, events.
+monitor_and_alert            Watch for a condition and notify: price drop, availability.
+booking_handoff              User is ready to book — send a secure booking link.
+modify_saved_trip            Update an existing saved trip or itinerary.
+confirmation_required_action Action is ready but needs explicit YES/NO (medium/high risk).
 
-Reply draft rules:
-- Under 300 characters.
-- Direct and helpful — no sycophantic openers.
-- Never claim a booking is complete.
-- Ask for exactly the missing fields you need — one question at a time.
-- Never ask for passport or payment details.
+== AVAILABLE TOOLS AND THEIR REQUIRED ARGS ==
+weather_lookup   — REQUIRED: city
+flight_search    — REQUIRED: origin AND destination
+hotel_search     — REQUIRED: city
+events_search    — REQUIRED: city
+
+Only include a tool in selected_tools if ALL its required args are in known_fields.
+
+== INTERPRETING MESSY REQUESTS ==
+Real travel messages are ambiguous. Extract everything you can:
+- "somewhere warm in June under £500 not Spain" →
+    known_fields: {month: "June", budget_max: 500, climate: "warm",
+                   excluded_destinations: ["Spain"]}
+    missing_fields: ["origin", "destination"] (ask for origin first)
+- "I land in Rome at 9pm, need a hotel near the station and something relaxed
+  to do in the morning" →
+    known_fields: {destination: "Rome", arrival_time: "21:00",
+                   hotel_preference: "near station",
+                   activity_preference: "relaxed morning activity"}
+    candidate_tools: [hotel_search, events_search]
+    selected_tools: [hotel_search]  (city known)
+- "Keep an eye on Tokyo for October, only tell me if meaningfully cheaper" →
+    task_pattern: monitor_and_alert
+    known_fields: {destination: "Tokyo", date_window: "October",
+                   alert_condition: "meaningfully cheaper than usual"}
+    missing_fields: ["origin"]
+- "Book me an Uber from my hotel to the airport at 6am tomorrow" →
+    task_pattern: confirmation_required_action
+    risk_level: medium
+    known_fields: {pickup: "hotel", destination: "airport", time: "06:00",
+                   date: "tomorrow"}
+    reply_draft must NOT claim the ride is booked.
+
+== ACTIVE TASK CONTEXT ==
+If context shows a prior task, merge new information into known_fields.
+Do not discard previously extracted fields.
+
+== POLICY CONSTRAINTS ==
+- Never ask for passport number, national ID, card number, CVV, or IBAN.
+- Never claim a booking is complete unless a booking event was confirmed.
+- risk_level medium or high → use confirmation_required_action unless confirmed.
+- reply_draft must be under 280 characters, SMS-appropriate, no emojis.
+- Travel domain only. For off-topic messages use ask_clarification.
 """.strip()
+
+# ── Tool schema passed to Claude ───────────────────────────────────────────────
+
+_PLANNER_TOOL = {
+    "name": "plan_travel_action",
+    "description": "Produce a structured plan for Luna's next action based on the user's SMS.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "goal": {
+                "type": "string",
+                "description": "The user's travel goal in one clear sentence.",
+            },
+            "task_pattern": {
+                "type": "string",
+                "enum": [p.value for p in TaskPattern],
+                "description": "How Luna should handle this goal.",
+            },
+            "known_fields": {
+                "type": "object",
+                "description": "All fields extracted from the message and context.",
+            },
+            "missing_fields": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Fields still needed. Ask for one at a time.",
+            },
+            "candidate_tools": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "All tools relevant to this goal.",
+            },
+            "selected_tools": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Tools to call this turn (required args present). May be empty.",
+            },
+            "risk_level": {
+                "type": "string",
+                "enum": ["low", "medium", "high"],
+            },
+            "next_action": {
+                "type": "string",
+                "description": "execute_tool | ask_clarification | create_confirmation | send_reply",
+            },
+            "reply_draft": {
+                "type": "string",
+                "description": "SMS reply to send. Under 280 chars. No openers.",
+            },
+        },
+        "required": [
+            "goal", "task_pattern", "known_fields", "missing_fields",
+            "candidate_tools", "selected_tools", "risk_level",
+            "next_action", "reply_draft",
+        ],
+    },
+}
+
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
@@ -59,25 +172,114 @@ def run(body: str, user_profile, active_tasks: list) -> PlannerOutput:
     Produce a PlannerOutput for the current turn.
 
     Routes to Claude if USE_CLAUDE_PLANNER=true and ANTHROPIC_API_KEY is set.
-    Falls back to the deterministic planner on any error or missing config.
+    Falls back to the deterministic planner on any error or missing config,
+    and logs a planner_fallback_used event.
     """
     if settings.use_claude_planner and settings.anthropic_api_key:
         try:
             return _run_claude(body, user_profile, active_tasks)
         except Exception:
-            # Any Claude failure (network, validation, rate limit) → fallback
-            return _run_fallback(body)
+            from luna.events import logger as events
+            uid = getattr(user_profile, "user_id", "system")
+            events.log("planner_fallback_used", uid, {"reason": "claude_planner_failed"})
     return _run_fallback(body)
+
+
+# ── Claude planner ────────────────────────────────────────────────────────────
+
+def _build_context(active_tasks: list) -> str:
+    """Format active task context for the Claude prompt."""
+    if not active_tasks:
+        return "Active tasks: none."
+    last = active_tasks[-1]
+    lines = [
+        f"Active tasks: {len(active_tasks)}.",
+        f"Most recent goal: {last.goal}",
+        f"Task pattern: {last.task_pattern.value}",
+    ]
+    if last.known_fields:
+        lines.append(f"Already known: {last.known_fields}")
+    if last.missing_fields:
+        lines.append(f"Still missing: {last.missing_fields}")
+    return "\n".join(lines)
+
+
+def _call_claude_once(client, messages: list) -> dict:
+    """
+    Make one Claude API call and return the raw tool-input dict.
+
+    This is a module-level function so tests can patch it directly:
+        monkeypatch.setattr("luna.reasoning.planner._call_claude_once", mock_fn)
+
+    Raises ValueError if Claude does not return a plan_travel_action tool call.
+    """
+    response = client.messages.create(
+        model=settings.anthropic_model,
+        max_tokens=settings.anthropic_max_tokens,
+        system=_SYSTEM_PROMPT,
+        messages=messages,
+        tools=[_PLANNER_TOOL],
+        tool_choice={"type": "any"},
+    )
+    for block in response.content:
+        if block.type == "tool_use" and block.name == "plan_travel_action":
+            return block.input
+    raise ValueError("Claude did not return a plan_travel_action tool call")
+
+
+def _run_claude(body: str, user_profile, active_tasks: list) -> PlannerOutput:
+    """
+    Call Claude to produce a validated PlannerOutput.
+
+    Retries once with a stricter repair prompt if the first response fails
+    Pydantic validation. Raises on second failure so run() can fall back.
+    """
+    import anthropic  # lazy — only reached when USE_CLAUDE_PLANNER=true
+    from pydantic import ValidationError
+
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    context = _build_context(active_tasks)
+
+    messages: list[dict] = [
+        {"role": "user", "content": f"{context}\n\nUser SMS: {body}"}
+    ]
+
+    # Attempt 1 ───────────────────────────────────────────────────────────────
+    first_error: str = ""
+    try:
+        raw = _call_claude_once(client, messages)
+        return PlannerOutput(**raw)
+    except (ValidationError, KeyError, TypeError, ValueError) as exc:
+        first_error = str(exc)[:300]
+
+    # Attempt 2 — stricter repair prompt ──────────────────────────────────────
+    repair_messages: list[dict] = [
+        {
+            "role": "user",
+            "content": (
+                f"{context}\n\nUser SMS: {body}\n\n"
+                "IMPORTANT: Your previous plan_travel_action call failed schema "
+                f"validation. Error: {first_error}. "
+                "Call plan_travel_action again. Every required field must be present "
+                "and correctly typed. task_pattern must be one of the allowed enum "
+                "values. known_fields must be an object. missing_fields and "
+                "candidate_tools and selected_tools must be arrays of strings."
+            ),
+        }
+    ]
+    # Let any exception propagate — run() will catch and fall back
+    raw = _call_claude_once(client, repair_messages)
+    return PlannerOutput(**raw)
 
 
 # ── Fallback planner ──────────────────────────────────────────────────────────
 
-_WEATHER_KW  = ["weather", "temperature", "forecast", "climate", "rain", "snow", "sunny"]
-_FLIGHT_KW   = ["flight", "fly", "plane", "airport", "airline", "depart", "arrive"]
-_HOTEL_KW    = ["hotel", "stay", "accommodation", "hostel", "airbnb", "motel", "resort", "lodge"]
-_EVENTS_KW   = ["event", "concert", "show", "restaurant", "reservation", "ticket", "festival", "tour", "activity"]
+_WEATHER_KW = ["weather", "temperature", "forecast", "climate", "rain", "snow", "sunny"]
+_FLIGHT_KW  = ["flight", "fly", "plane", "airport", "airline", "depart", "arrive"]
+_HOTEL_KW   = ["hotel", "stay", "accommodation", "hostel", "airbnb", "motel", "resort", "lodge"]
+_EVENTS_KW  = ["event", "concert", "show", "restaurant", "reservation", "ticket",
+               "festival", "tour", "activity"]
 
-# Patterns: "from London to Paris", "to Tokyo", "in Rome"
 _RE_FROM_TO = re.compile(r"\bfrom\s+([a-z ]+?)\s+to\s+([a-z ]+?)(?:\b|$)", re.IGNORECASE)
 _RE_TO      = re.compile(r"\bto\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)")
 _RE_IN      = re.compile(r"\bin\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)")
@@ -164,7 +366,6 @@ def _run_fallback(body: str) -> PlannerOutput:
             reply_draft="I can help find travel events. Which city and dates should I check?",
         )
 
-    # Unknown intent — ask what the user wants help with
     return PlannerOutput(
         goal=body,
         task_pattern=TaskPattern.ask_clarification,
@@ -174,68 +375,8 @@ def _run_fallback(body: str) -> PlannerOutput:
         selected_tools=[],
         risk_level=RiskLevel.low,
         next_action="ask_clarification",
-        reply_draft="I'm Luna, your SMS-native travel assistant. Tell me what trip or place you want help with.",
+        reply_draft=(
+            "I'm Luna, your SMS travel operator. "
+            "Tell me what trip or destination you want help with."
+        ),
     )
-
-
-# ── Claude planner ────────────────────────────────────────────────────────────
-
-# Tool schema passed to Claude to force structured output.
-_PLANNER_TOOL = {
-    "name": "plan_travel_action",
-    "description": "Produce a structured plan for Luna's next action.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "goal":            {"type": "string", "description": "The user's travel goal in plain English."},
-            "task_pattern":    {"type": "string", "enum": [p.value for p in TaskPattern]},
-            "known_fields":    {"type": "object", "description": "Fields already collected from the user."},
-            "missing_fields":  {"type": "array", "items": {"type": "string"}, "description": "Fields still needed."},
-            "candidate_tools": {"type": "array", "items": {"type": "string"}, "description": "Tools that could fulfil this goal."},
-            "selected_tools":  {"type": "array", "items": {"type": "string"}, "description": "Tools to call this turn (may be empty)."},
-            "risk_level":      {"type": "string", "enum": ["low", "medium", "high"]},
-            "next_action":     {"type": "string", "description": "What the runtime should do next."},
-            "reply_draft":     {"type": "string", "description": "The SMS reply to send. Under 300 chars."},
-        },
-        "required": [
-            "goal", "task_pattern", "known_fields", "missing_fields",
-            "candidate_tools", "selected_tools", "risk_level", "next_action", "reply_draft",
-        ],
-    },
-}
-
-
-def _run_claude(body: str, user_profile, active_tasks: list) -> PlannerOutput:
-    """
-    Call Claude with tool use to produce a validated PlannerOutput.
-    Raises on any error so the caller can fall back to _run_fallback.
-    """
-    import anthropic  # lazy import — only reached when USE_CLAUDE_PLANNER=true
-
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-
-    active_task_summary = (
-        f"Active tasks: {len(active_tasks)}. "
-        + (f"Current goal: {active_tasks[-1].goal}" if active_tasks else "No active tasks.")
-    )
-
-    response = client.messages.create(
-        model=settings.anthropic_model,
-        max_tokens=1024,
-        system=_SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": f"[Context: {active_task_summary}]\n\nUser message: {body}",
-            }
-        ],
-        tools=[_PLANNER_TOOL],
-        tool_choice={"type": "any"},
-    )
-
-    for block in response.content:
-        if block.type == "tool_use" and block.name == "plan_travel_action":
-            return PlannerOutput(**block.input)
-
-    # Claude responded without using the tool — treat as validation failure
-    raise ValueError("Claude did not return a plan_travel_action tool call")

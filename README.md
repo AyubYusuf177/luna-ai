@@ -8,7 +8,7 @@ Luna is not a chatbot. Luna is a persistent travel operator that lives inside SM
 
 ## What Luna is not yet
 
-Luna v0.1.1 is a demo-ready foundation. The following are intentionally out of scope until later phases:
+Luna v0.2.0 is a demo-ready foundation. The following are intentionally out of scope until later phases:
 
 - **No real bookings.** Flight, hotel, and event searches return mock data.
 - **No real APIs.** No Amadeus, Duffel, Booking.com, or Skyscanner integration.
@@ -130,6 +130,7 @@ ProactiveCandidate
 | v0.0.8  | Proactive Engine — 6-check decision gate + /simulate/proactive | ✅ Done |
 | v0.1.0  | Demo-ready — hardening, README, demo script | ✅ Done |
 | v0.1.1  | Twilio SMS hardening — TwiML responses, ngrok guide | ✅ Done |
+| v0.2.0  | Claude-powered structured planner | ✅ Done |
 
 ---
 
