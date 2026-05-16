@@ -1,12 +1,11 @@
 """
-Tests for the Claude-powered planner path in luna/reasoning/planner.py — v0.2.0.
+Tests for the Claude-powered planner path in luna/reasoning/planner.py — v0.2.2.
 
 Real Anthropic API calls never happen in these tests because:
   - All tests either leave USE_CLAUDE_PLANNER=false (default), or
-  - Patch luna.reasoning.planner._call_claude_once to return a canned dict.
+  - Patch luna.reasoning.planner._call_claude_once to return a canned tuple.
 
-The _call_claude_once function is module-level specifically to enable this
-clean monkeypatching pattern without mocking the Anthropic SDK constructor.
+_call_claude_once returns (raw_dict, usage | None). Mocks return (raw, None).
 """
 
 import pytest
@@ -40,7 +39,7 @@ def enable_claude(monkeypatch):
 
 
 def _valid_raw(**overrides) -> dict:
-    """Return a minimal valid plan_travel_action payload."""
+    """Return a minimal valid plan_travel_action payload (plain dict, not a tuple)."""
     base = {
         "goal": "Find flights from London to Rome",
         "task_pattern": "search_and_compare",
@@ -54,6 +53,11 @@ def _valid_raw(**overrides) -> dict:
     }
     base.update(overrides)
     return base
+
+
+def _mock(raw: dict):
+    """Wrap a raw payload dict into the (raw, None) tuple _call_claude_once returns."""
+    return lambda client, msgs: (raw, None)
 
 
 # ── Fallback when Claude is disabled ─────────────────────────────────────────
@@ -77,7 +81,7 @@ def test_fallback_used_when_no_api_key(monkeypatch):
 
 def test_claude_path_returns_planner_output(enable_claude, monkeypatch):
     """A valid mock response produces a PlannerOutput."""
-    monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs: _valid_raw())
+    monkeypatch.setattr(planner_module, "_call_claude_once", _mock(_valid_raw()))
     result = run("flights from London to Rome", _FakeUser(), [])
     assert isinstance(result, PlannerOutput)
     assert result.task_pattern == TaskPattern.search_and_compare
@@ -88,8 +92,7 @@ def test_claude_path_returns_planner_output(enable_claude, monkeypatch):
 
 def test_claude_path_reply_draft_preserved(enable_claude, monkeypatch):
     """reply_draft from Claude is returned as-is."""
-    raw = _valid_raw(reply_draft="Searching flights now.")
-    monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs: raw)
+    monkeypatch.setattr(planner_module, "_call_claude_once", _mock(_valid_raw(reply_draft="Searching flights now.")))
     result = run("flights from London to Rome", _FakeUser(), [])
     assert result.reply_draft == "Searching flights now."
 
@@ -100,7 +103,7 @@ def test_claude_path_no_real_api_call(enable_claude, monkeypatch):
 
     def mock_claude(client, msgs):
         called.append(msgs)
-        return _valid_raw()
+        return (_valid_raw(), None)
 
     monkeypatch.setattr(planner_module, "_call_claude_once", mock_claude)
     run("flights from London to Rome", _FakeUser(), [])
@@ -116,8 +119,8 @@ def test_retry_on_malformed_first_response(enable_claude, monkeypatch):
     def mock_claude(client, msgs):
         call_count.append(1)
         if len(call_count) == 1:
-            return {"goal": "incomplete"}  # missing required fields → ValidationError
-        return _valid_raw()
+            return ({"goal": "incomplete"}, None)  # missing required fields → ValidationError
+        return (_valid_raw(), None)
 
     monkeypatch.setattr(planner_module, "_call_claude_once", mock_claude)
     result = run("flights from London to Rome", _FakeUser(), [])
@@ -132,8 +135,8 @@ def test_repair_prompt_contains_error_detail(enable_claude, monkeypatch):
     def mock_claude(client, msgs):
         messages_seen.append(msgs[0]["content"])
         if len(messages_seen) == 1:
-            return {"goal": "bad"}
-        return _valid_raw()
+            return ({"goal": "bad"}, None)
+        return (_valid_raw(), None)
 
     monkeypatch.setattr(planner_module, "_call_claude_once", mock_claude)
     run("flights from London to Rome", _FakeUser(), [])
@@ -147,7 +150,7 @@ def test_fallback_after_two_bad_responses(enable_claude, monkeypatch):
     monkeypatch.setattr(
         planner_module,
         "_call_claude_once",
-        lambda client, msgs: {"goal": "bad"},  # always malformed
+        lambda client, msgs: ({"goal": "bad"}, None),
     )
     result = run("flights from London to Rome", _FakeUser(), [])
     assert isinstance(result, PlannerOutput)  # fallback still returns valid output
@@ -158,7 +161,7 @@ def test_planner_fallback_event_logged(enable_claude, monkeypatch):
     monkeypatch.setattr(
         planner_module,
         "_call_claude_once",
-        lambda client, msgs: {"goal": "bad"},
+        lambda client, msgs: ({"goal": "bad"}, None),
     )
     run("flights from London to Rome", _FakeUser(), [])
     fallback_events = [
@@ -173,7 +176,7 @@ def test_planner_fallback_event_has_correct_uid(enable_claude, monkeypatch):
     monkeypatch.setattr(
         planner_module,
         "_call_claude_once",
-        lambda client, msgs: {"goal": "bad"},
+        lambda client, msgs: ({"goal": "bad"}, None),
     )
     user = _FakeUser()
     run("flights from London to Rome", user, [])
@@ -193,7 +196,7 @@ def test_all_task_patterns_accepted(enable_claude, monkeypatch):
             selected_tools=[],
             next_action="ask_clarification",
         )
-        monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs, r=raw: r)
+        monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
         result = run("some travel request", _FakeUser(), [])
         assert result.task_pattern == pattern
 
@@ -202,7 +205,7 @@ def test_risk_levels_accepted(enable_claude, monkeypatch):
     """All three risk levels are accepted by PlannerOutput."""
     for level in ("low", "medium", "high"):
         raw = _valid_raw(risk_level=level)
-        monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs, r=raw: r)
+        monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
         result = run("book a flight", _FakeUser(), [])
         assert result.risk_level.value == level
 
@@ -214,7 +217,7 @@ def test_empty_selected_tools_valid(enable_claude, monkeypatch):
         next_action="ask_clarification",
         reply_draft="Where are you flying from?",
     )
-    monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs: raw)
+    monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
     result = run("I want to fly somewhere", _FakeUser(), [])
     assert result.selected_tools == []
     assert result.next_action == "ask_clarification"
@@ -239,7 +242,7 @@ def test_warm_june_budget_request(enable_claude, monkeypatch):
         next_action="ask_clarification",
         reply_draft="Where would you be flying from?",
     )
-    monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs: raw)
+    monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
     result = run("somewhere warm in June under £500 not Spain", _FakeUser(), [])
     assert result.known_fields["climate"] == "warm"
     assert "Spain" in result.known_fields["excluded_destinations"]
@@ -263,7 +266,7 @@ def test_rome_arrival_multi_tool(enable_claude, monkeypatch):
         next_action="execute_tool",
         reply_draft="Finding hotels near Rome station and morning activities.",
     )
-    monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs: raw)
+    monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
     result = run(
         "I land in Rome at 9pm, need a hotel near the station and something relaxed in the morning",
         _FakeUser(),
@@ -290,7 +293,7 @@ def test_tokyo_monitor_pattern(enable_claude, monkeypatch):
         next_action="ask_clarification",
         reply_draft="I'll watch Tokyo for October. Where would you be flying from?",
     )
-    monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs: raw)
+    monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
     result = run(
         "Keep an eye on Tokyo for October, only tell me if meaningfully cheaper",
         _FakeUser(),
@@ -319,7 +322,7 @@ def test_uber_booking_confirmation_required(enable_claude, monkeypatch):
         next_action="create_confirmation",
         reply_draft="Uber from hotel to airport at 6am tomorrow — confirm? Reply YES or NO.",
     )
-    monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs: raw)
+    monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
     result = run(
         "Book me an Uber from my hotel to the airport at 6am tomorrow",
         _FakeUser(),
@@ -338,7 +341,7 @@ def test_active_task_context_included_in_prompt(enable_claude, monkeypatch):
 
     def mock_claude(client, msgs):
         messages_seen.append(msgs[0]["content"])
-        return _valid_raw()
+        return (_valid_raw(), None)
 
     monkeypatch.setattr(planner_module, "_call_claude_once", mock_claude)
 
@@ -359,7 +362,7 @@ def test_no_active_tasks_produces_clean_context(enable_claude, monkeypatch):
 
     def mock_claude(client, msgs):
         messages_seen.append(msgs[0]["content"])
-        return _valid_raw()
+        return (_valid_raw(), None)
 
     monkeypatch.setattr(planner_module, "_call_claude_once", mock_claude)
     run("flights to Rome", _FakeUser(), [])

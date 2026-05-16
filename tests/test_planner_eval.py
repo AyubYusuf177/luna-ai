@@ -1,5 +1,5 @@
 """
-tests/test_planner_eval.py — Planner Evaluation Suite (v0.2.1).
+tests/test_planner_eval.py — Planner Evaluation Suite (v0.2.2).
 
 Loads structured eval cases from tests/fixtures/planner_eval_cases.json and
 validates that the planner produces correct PlannerOutput for realistic travel
@@ -14,6 +14,8 @@ Two test modes:
 
 No real Anthropic API calls are made. All Claude-mode tests patch at the
 _call_claude_once boundary, keeping tests deterministic and free.
+
+_call_claude_once returns (raw_dict, usage | None). Mocks return (raw, None).
 """
 
 import json
@@ -118,15 +120,13 @@ def _assert_eval(result: PlannerOutput, case: dict) -> None:
 def _make_claude_raw(case: dict) -> dict:
     """
     Build a canned plan_travel_action payload from an eval case.
-    Represents the structured output we expect a well-behaved Claude call to
-    return for this message. Used to patch _call_claude_once in Claude-mode tests.
+    Returns a plain dict (not a tuple). Wrap with _mock() to use as a patch.
     """
-    # Derive a plausible reply_draft from the case
     missing = case["expected_missing_fields_any"]
     if missing:
         reply = f"To help with that I need your {missing[0].replace('_', ' ')}."
     elif case["expected_next_action_any"][0] in ("execute_tool", "send_reply"):
-        reply = f"On it — searching now."
+        reply = "On it — searching now."
     else:
         reply = "Let me look into that for you."
 
@@ -141,6 +141,11 @@ def _make_claude_raw(case: dict) -> dict:
         "next_action": case["expected_next_action_any"][0],
         "reply_draft": reply,
     }
+
+
+def _mock(raw: dict):
+    """Wrap a raw dict into the (raw, None) tuple _call_claude_once returns."""
+    return lambda client, msgs: (raw, None)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -228,7 +233,7 @@ def test_fallback_planner_eval(case):
 def test_claude_planner_eval(case, enable_claude, monkeypatch):
     """Claude planner path produces PlannerOutput that satisfies eval expectations."""
     raw = _make_claude_raw(case)
-    monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs: raw)
+    monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
     result = run(case["user_message"], _FakeUser(), [])
     _assert_eval(result, case)
 
@@ -242,7 +247,7 @@ def _cases_by_category(cat: str) -> list[dict]:
 def test_all_broad_trip_cases(enable_claude, monkeypatch):
     for case in _cases_by_category("broad_trip_planning"):
         raw = _make_claude_raw(case)
-        monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs, r=raw: r)
+        monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
         result = run(case["user_message"], _FakeUser(), [])
         _assert_eval(result, case)
 
@@ -250,7 +255,7 @@ def test_all_broad_trip_cases(enable_claude, monkeypatch):
 def test_all_flight_cases(enable_claude, monkeypatch):
     for case in _cases_by_category("flight_search"):
         raw = _make_claude_raw(case)
-        monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs, r=raw: r)
+        monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
         result = run(case["user_message"], _FakeUser(), [])
         _assert_eval(result, case)
 
@@ -258,7 +263,7 @@ def test_all_flight_cases(enable_claude, monkeypatch):
 def test_all_hotel_cases(enable_claude, monkeypatch):
     for case in _cases_by_category("hotel_search"):
         raw = _make_claude_raw(case)
-        monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs, r=raw: r)
+        monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
         result = run(case["user_message"], _FakeUser(), [])
         _assert_eval(result, case)
 
@@ -266,7 +271,7 @@ def test_all_hotel_cases(enable_claude, monkeypatch):
 def test_all_compound_cases(enable_claude, monkeypatch):
     for case in _cases_by_category("compound_travel_planning"):
         raw = _make_claude_raw(case)
-        monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs, r=raw: r)
+        monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
         result = run(case["user_message"], _FakeUser(), [])
         _assert_eval(result, case)
 
@@ -274,7 +279,7 @@ def test_all_compound_cases(enable_claude, monkeypatch):
 def test_all_weather_cases(enable_claude, monkeypatch):
     for case in _cases_by_category("weather_lookup"):
         raw = _make_claude_raw(case)
-        monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs, r=raw: r)
+        monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
         result = run(case["user_message"], _FakeUser(), [])
         _assert_eval(result, case)
 
@@ -282,7 +287,7 @@ def test_all_weather_cases(enable_claude, monkeypatch):
 def test_all_events_cases(enable_claude, monkeypatch):
     for case in _cases_by_category("events_local_discovery"):
         raw = _make_claude_raw(case)
-        monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs, r=raw: r)
+        monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
         result = run(case["user_message"], _FakeUser(), [])
         _assert_eval(result, case)
 
@@ -290,7 +295,7 @@ def test_all_events_cases(enable_claude, monkeypatch):
 def test_all_monitor_cases(enable_claude, monkeypatch):
     for case in _cases_by_category("monitor_alert"):
         raw = _make_claude_raw(case)
-        monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs, r=raw: r)
+        monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
         result = run(case["user_message"], _FakeUser(), [])
         _assert_eval(result, case)
 
@@ -298,7 +303,7 @@ def test_all_monitor_cases(enable_claude, monkeypatch):
 def test_all_transport_cases(enable_claude, monkeypatch):
     for case in _cases_by_category("transport_ride"):
         raw = _make_claude_raw(case)
-        monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs, r=raw: r)
+        monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
         result = run(case["user_message"], _FakeUser(), [])
         _assert_eval(result, case)
 
@@ -306,7 +311,7 @@ def test_all_transport_cases(enable_claude, monkeypatch):
 def test_all_booking_cases(enable_claude, monkeypatch):
     for case in _cases_by_category("booking_handoff"):
         raw = _make_claude_raw(case)
-        monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs, r=raw: r)
+        monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
         result = run(case["user_message"], _FakeUser(), [])
         _assert_eval(result, case)
 
@@ -314,7 +319,7 @@ def test_all_booking_cases(enable_claude, monkeypatch):
 def test_all_unsafe_cases(enable_claude, monkeypatch):
     for case in _cases_by_category("unsafe_payment_passport"):
         raw = _make_claude_raw(case)
-        monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs, r=raw: r)
+        monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
         result = run(case["user_message"], _FakeUser(), [])
         _assert_eval(result, case)
 
@@ -322,7 +327,7 @@ def test_all_unsafe_cases(enable_claude, monkeypatch):
 def test_all_offtopic_cases(enable_claude, monkeypatch):
     for case in _cases_by_category("off_topic"):
         raw = _make_claude_raw(case)
-        monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs, r=raw: r)
+        monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
         result = run(case["user_message"], _FakeUser(), [])
         _assert_eval(result, case)
 
@@ -333,7 +338,7 @@ def test_regression_warm_june_asks_for_origin(enable_claude, monkeypatch):
     """Verified manually: warm/June/£500/not-Spain → planner asks for origin."""
     case = next(c for c in _EVAL_CASES if c["id"] == "regression-001")
     raw = _make_claude_raw(case)
-    monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs: raw)
+    monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
     result = run(case["user_message"], _FakeUser(), [])
     assert result.task_pattern == TaskPattern.search_and_compare
     assert "origin" in result.missing_fields
@@ -345,7 +350,7 @@ def test_regression_rome_compound_hotel_selected(enable_claude, monkeypatch):
     """Verified manually: Rome 9pm compound request → hotel_search selected, events candidate."""
     case = next(c for c in _EVAL_CASES if c["id"] == "regression-002")
     raw = _make_claude_raw(case)
-    monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs: raw)
+    monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
     result = run(case["user_message"], _FakeUser(), [])
     assert result.task_pattern == TaskPattern.search_and_compare
     assert "hotel_search" in result.candidate_tools
@@ -357,7 +362,7 @@ def test_regression_tokyo_monitor_pattern(enable_claude, monkeypatch):
     """Verified manually: Tokyo October monitor → monitor_and_alert, asks for origin."""
     case = next(c for c in _EVAL_CASES if c["id"] == "regression-003")
     raw = _make_claude_raw(case)
-    monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs: raw)
+    monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
     result = run(case["user_message"], _FakeUser(), [])
     assert result.task_pattern == TaskPattern.monitor_and_alert
     assert "origin" in result.missing_fields
@@ -370,7 +375,7 @@ def test_regression_tokyo_monitor_pattern(enable_claude, monkeypatch):
 def test_reply_draft_always_non_empty(case, enable_claude, monkeypatch):
     """Every eval case must produce a non-empty reply_draft."""
     raw = _make_claude_raw(case)
-    monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs: raw)
+    monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
     result = run(case["user_message"], _FakeUser(), [])
     assert result.reply_draft
 
@@ -379,7 +384,7 @@ def test_reply_draft_always_non_empty(case, enable_claude, monkeypatch):
 def test_reply_draft_within_sms_limit(case, enable_claude, monkeypatch):
     """Every eval case reply_draft must fit within 280 characters."""
     raw = _make_claude_raw(case)
-    monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs: raw)
+    monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
     result = run(case["user_message"], _FakeUser(), [])
     assert len(result.reply_draft) <= 280, (
         f"[{case['id']}] reply_draft too long: {len(result.reply_draft)} chars"
@@ -390,6 +395,6 @@ def test_reply_draft_within_sms_limit(case, enable_claude, monkeypatch):
 def test_result_is_planner_output_instance(case, enable_claude, monkeypatch):
     """run() must always return a PlannerOutput instance."""
     raw = _make_claude_raw(case)
-    monkeypatch.setattr(planner_module, "_call_claude_once", lambda client, msgs: raw)
+    monkeypatch.setattr(planner_module, "_call_claude_once", _mock(raw))
     result = run(case["user_message"], _FakeUser(), [])
     assert isinstance(result, PlannerOutput)

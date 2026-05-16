@@ -51,11 +51,13 @@ Luna AI is an SMS-native agentic travel operator.
 
 ## 4. Current Verified State
 
-- v0.2.0 committed and pushed to `main`. Tests: 328 passed.
+- v0.2.2 committed and pushed to `main`.
 - Claude planner verified with a real Anthropic API key. Three manual tests passed:
   - "somewhere warm for 4 days in June under £500, not Spain" → extracted constraints, asked for origin.
   - "I land in Rome at 9pm, find me a hotel near the station and something relaxed the next morning" → asked for arrival date and stay length.
   - "Keep an eye on Tokyo for October but only tell me if it is meaningfully cheaper than usual" → `monitor_and_alert` pattern, asked for origin.
+- Planner emits `planner_run` event on every call with trace metadata (mode, model, latency, tokens, cost, retry_count, task_pattern, selected_tools).
+- Cost estimator supports claude-sonnet-4-6, claude-haiku-4-5-20251001, claude-opus-4-7.
 - Twilio webhook verified through ngrok with TwiML response.
 - Twilio UK SMS number compliance ticket unresolved (external blocker).
 
@@ -99,7 +101,7 @@ These are non-negotiable. Do not weaken them.
 | Version | Goal |
 |---|---|
 | v0.2.1 | Planner Evaluation Suite — offline harness to measure and improve planner reasoning |
-| v0.2.2 | Planner cost and logging controls |
+| v0.2.2 | Planner observability — planner_run event, cost estimator, retry/fallback tracing |
 | v0.3.0 | First real low-risk API tool (likely weather) |
 | v0.3.1 | Real events/places tool |
 | v0.4.0 | Real proactive scheduled checks |

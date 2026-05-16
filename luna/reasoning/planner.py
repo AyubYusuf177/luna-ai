@@ -1,5 +1,5 @@
 """
-luna/reasoning/planner.py — Travel Planner (v0.2.0).
+luna/reasoning/planner.py — Travel Planner (v0.2.2).
 
 Single public function: run(body, user_profile, active_tasks) → PlannerOutput.
 
@@ -12,15 +12,70 @@ Two implementations selected at runtime:
                         Used in all tests and local dev by default.
 
 Design notes:
-  - _call_claude_once() is a module-level function so tests can patch it directly.
-  - No real API call happens unless both flags are set.
-  - planner_fallback_used event is logged whenever Claude fails.
+  - _call_claude_once(client, messages) → (raw_dict, usage | None).
+    Module-level so tests can patch it: monkeypatch.setattr(
+        "luna.reasoning.planner._call_claude_once", lambda client, msgs: (raw, None))
+  - _run_claude() takes a mutable td dict so retry_count is captured even when
+    the second attempt raises and run() catches the exception.
+  - run() emits a planner_run event after every call (fallback or Claude) with
+    safe, non-sensitive metadata for observability.
+  - No real API call happens unless both USE_CLAUDE_PLANNER and ANTHROPIC_API_KEY
+    are set.
 """
 
 import re
+import time
+from dataclasses import dataclass, field
 
 from luna.agent.schemas import PlannerOutput, RiskLevel, TaskPattern
 from luna.config import settings
+
+# ── Planner trace ─────────────────────────────────────────────────────────────
+
+@dataclass
+class PlannerTrace:
+    """Lightweight record of a single planner invocation. Logged as event metadata."""
+    planner_mode: str                    # "fallback" | "claude"
+    used_claude: bool
+    fallback_used: bool
+    retry_count: int
+    latency_ms: float
+    selected_tools: list = field(default_factory=list)
+    model: str | None = None
+    fallback_reason: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    estimated_cost_usd: float | None = None
+    task_pattern: str | None = None
+    validation_error: str | None = None
+
+
+# ── Cost estimator ────────────────────────────────────────────────────────────
+
+# USD per million tokens. Update when Anthropic changes pricing.
+_COST_PER_MTOK: dict[str, tuple[float, float]] = {
+    # model_id: (input_usd_per_mtok, output_usd_per_mtok)
+    "claude-sonnet-4-6":         (3.00, 15.00),
+    "claude-haiku-4-5-20251001": (0.80,  4.00),
+    "claude-opus-4-7":           (15.00, 75.00),
+}
+
+
+def _estimate_cost(
+    model: str | None,
+    input_tokens: int | None,
+    output_tokens: int | None,
+) -> float | None:
+    """Return estimated USD cost or None if any input is absent/unknown."""
+    if model is None or input_tokens is None or output_tokens is None:
+        return None
+    rates = _COST_PER_MTOK.get(model)
+    if rates is None:
+        return None
+    input_rate, output_rate = rates
+    return round(
+        (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000, 8
+    )
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 
@@ -172,17 +227,60 @@ def run(body: str, user_profile, active_tasks: list) -> PlannerOutput:
     Produce a PlannerOutput for the current turn.
 
     Routes to Claude if USE_CLAUDE_PLANNER=true and ANTHROPIC_API_KEY is set.
-    Falls back to the deterministic planner on any error or missing config,
-    and logs a planner_fallback_used event.
+    Falls back to the deterministic planner on any error or missing config.
+
+    Always emits a planner_run event with non-sensitive trace metadata.
+    Also emits planner_fallback_used (legacy) when Claude fails, for backwards
+    compatibility with existing event-log consumers.
     """
+    from luna.events import logger as events
+
+    uid = getattr(user_profile, "user_id", "system")
+    t0 = time.monotonic()
+
+    # Mutable trace data — _run_claude populates it even if it raises.
+    td: dict = {
+        "retry_count": 0,
+        "input_tokens": None,
+        "output_tokens": None,
+        "validation_error": None,
+    }
+    planner_mode = "fallback"
+    used_claude = False
+    fallback_used = False
+    fallback_reason: str | None = None
+
     if settings.use_claude_planner and settings.anthropic_api_key:
         try:
-            return _run_claude(body, user_profile, active_tasks)
+            result = _run_claude(body, user_profile, active_tasks, td)
+            planner_mode = "claude"
+            used_claude = True
         except Exception:
-            from luna.events import logger as events
-            uid = getattr(user_profile, "user_id", "system")
+            fallback_used = True
+            fallback_reason = "claude_planner_failed"
             events.log("planner_fallback_used", uid, {"reason": "claude_planner_failed"})
-    return _run_fallback(body)
+            result = _run_fallback(body)
+    else:
+        result = _run_fallback(body)
+
+    latency_ms = round((time.monotonic() - t0) * 1000, 1)
+    model = settings.anthropic_model if used_claude else None
+
+    events.log("planner_run", uid, {
+        "planner_mode": planner_mode,
+        "model": model,
+        "fallback_used": fallback_used,
+        "fallback_reason": fallback_reason,
+        "retry_count": td["retry_count"],
+        "latency_ms": latency_ms,
+        "input_tokens": td["input_tokens"],
+        "output_tokens": td["output_tokens"],
+        "estimated_cost_usd": _estimate_cost(model, td["input_tokens"], td["output_tokens"]),
+        "task_pattern": result.task_pattern.value,
+        "selected_tools": list(result.selected_tools),
+    })
+
+    return result
 
 
 # ── Claude planner ────────────────────────────────────────────────────────────
@@ -204,13 +302,17 @@ def _build_context(active_tasks: list) -> str:
     return "\n".join(lines)
 
 
-def _call_claude_once(client, messages: list) -> dict:
+def _call_claude_once(client, messages: list) -> tuple[dict, dict | None]:
     """
-    Make one Claude API call and return the raw tool-input dict.
+    Make one Claude API call and return (raw_tool_input, usage | None).
 
-    This is a module-level function so tests can patch it directly:
-        monkeypatch.setattr("luna.reasoning.planner._call_claude_once", mock_fn)
+    Module-level so tests can patch it without touching the Anthropic SDK:
+        monkeypatch.setattr(
+            "luna.reasoning.planner._call_claude_once",
+            lambda client, msgs: (raw_dict, None),
+        )
 
+    usage dict has keys "input_tokens" and "output_tokens" when available.
     Raises ValueError if Claude does not return a plan_travel_action tool call.
     """
     response = client.messages.create(
@@ -221,15 +323,27 @@ def _call_claude_once(client, messages: list) -> dict:
         tools=[_PLANNER_TOOL],
         tool_choice={"type": "any"},
     )
+    usage: dict | None = None
+    try:
+        usage = {
+            "input_tokens": response.usage.input_tokens,
+            "output_tokens": response.usage.output_tokens,
+        }
+    except AttributeError:
+        pass
     for block in response.content:
         if block.type == "tool_use" and block.name == "plan_travel_action":
-            return block.input
+            return block.input, usage
     raise ValueError("Claude did not return a plan_travel_action tool call")
 
 
-def _run_claude(body: str, user_profile, active_tasks: list) -> PlannerOutput:
+def _run_claude(body: str, user_profile, active_tasks: list, td: dict) -> PlannerOutput:
     """
     Call Claude to produce a validated PlannerOutput.
+
+    td is a mutable dict owned by run(). _run_claude populates it with
+    retry_count, input_tokens, output_tokens, and validation_error so that
+    run() retains partial trace data even if this function raises.
 
     Retries once with a stricter repair prompt if the first response fails
     Pydantic validation. Raises on second failure so run() can fall back.
@@ -247,10 +361,15 @@ def _run_claude(body: str, user_profile, active_tasks: list) -> PlannerOutput:
     # Attempt 1 ───────────────────────────────────────────────────────────────
     first_error: str = ""
     try:
-        raw = _call_claude_once(client, messages)
+        raw, usage = _call_claude_once(client, messages)
+        if usage:
+            td["input_tokens"] = usage.get("input_tokens")
+            td["output_tokens"] = usage.get("output_tokens")
         return PlannerOutput(**raw)
     except (ValidationError, KeyError, TypeError, ValueError) as exc:
         first_error = str(exc)[:300]
+        td["validation_error"] = first_error
+        td["retry_count"] = 1
 
     # Attempt 2 — stricter repair prompt ──────────────────────────────────────
     repair_messages: list[dict] = [
@@ -267,8 +386,12 @@ def _run_claude(body: str, user_profile, active_tasks: list) -> PlannerOutput:
             ),
         }
     ]
-    # Let any exception propagate — run() will catch and fall back
-    raw = _call_claude_once(client, repair_messages)
+    # Let any exception propagate — run() will catch and fall back.
+    # td["retry_count"] is already 1 so trace data is preserved on failure.
+    raw, usage = _call_claude_once(client, repair_messages)
+    if usage:
+        td["input_tokens"] = usage.get("input_tokens")
+        td["output_tokens"] = usage.get("output_tokens")
     return PlannerOutput(**raw)
 
 
