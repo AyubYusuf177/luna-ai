@@ -189,7 +189,9 @@ Interactive API docs (Swagger UI): `http://localhost:8000/docs`
 pytest -v
 ```
 
-Expected: **296 passed** — no external calls, no real APIs, no real Twilio sends.
+No external calls, no real APIs, no real Twilio sends.
+
+Planner evals live in `tests/fixtures/planner_eval_cases.json` and are run with pytest.
 
 ---
 
