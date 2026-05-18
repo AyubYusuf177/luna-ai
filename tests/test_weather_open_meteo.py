@@ -1,11 +1,15 @@
 """
-tests/test_weather_open_meteo.py — Open-Meteo weather provider tests (v0.3.0).
+tests/test_weather_open_meteo.py — Open-Meteo weather provider tests (v0.3.1).
+
+Geocoding is now delegated to luna.location.normalizer. Tests patch
+normalizer._geocode_query (list[dict] contract) rather than the old
+wom._geocode_city (tuple contract). _fetch_current_weather stays on wom.
 
 Covers:
   - mock provider still works via dispatcher (default config, no network)
   - open_meteo success: monkeypatched geocode + forecast → ToolResult.ok
   - open_meteo missing city → ToolResult.missing_args
-  - geocode returns None (city not found) → ToolResult.error with helpful text
+  - geocode returns [] (city not found) → ToolResult.error with helpful text
   - geocode raises → ToolResult.error, no raw exception escapes
   - forecast raises → ToolResult.error, no raw exception escapes
   - reply text contains city name and temperature
@@ -18,6 +22,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 import luna.config as config_module
+import luna.location.normalizer as normalizer_module
 import luna.tools.providers.weather_open_meteo as wom
 from luna.events import logger as events
 from luna.main import app
@@ -27,24 +32,28 @@ from luna.tools.schemas import ToolRequest, ToolResult, ToolStatus
 
 
 # ── Module-level async stubs (no real HTTP) ───────────────────────────────────
+# _query_* stubs return list[dict] — the contract for normalizer._geocode_query.
 
-async def _geo_paris(city):
-    return (48.85, 2.35, "Paris")
-
-
-async def _geo_rome(city):
-    return (41.90, 12.50, "Rome")
+async def _query_paris(query):
+    return [{"name": "Paris", "latitude": 48.85, "longitude": 2.35,
+             "country": "France", "country_code": "FR", "admin1": "Ile-de-France"}]
 
 
-async def _geo_london(city):
-    return (51.51, -0.12, "London")
+async def _query_rome(query):
+    return [{"name": "Rome", "latitude": 41.90, "longitude": 12.50,
+             "country": "Italy", "country_code": "IT", "admin1": "Lazio"}]
 
 
-async def _geo_none(city):
-    return None
+async def _query_london(query):
+    return [{"name": "London", "latitude": 51.51, "longitude": -0.12,
+             "country": "United Kingdom", "country_code": "GB"}]
 
 
-async def _geo_raise(city):
+async def _query_none(query):
+    return []
+
+
+async def _query_raise(query):
     raise Exception("Simulated geocode failure")
 
 
@@ -76,7 +85,7 @@ def use_open_meteo(monkeypatch):
 
 @pytest.fixture()
 def open_meteo_success(use_open_meteo, monkeypatch):
-    monkeypatch.setattr(wom, "_geocode_city", _geo_paris)
+    monkeypatch.setattr(normalizer_module, "_geocode_query", _query_paris)
     monkeypatch.setattr(wom, "_fetch_current_weather", _weather_ok)
 
 
@@ -166,12 +175,11 @@ async def test_open_meteo_condition_label_set(open_meteo_success):
     result = await dispatcher.dispatch(ToolRequest(
         tool_name="weather_lookup", args={"city": "Paris"},
     ))
-    # weather_code=1 → "Mainly clear"
     assert result.data["condition"] == "Mainly clear"
 
 
 async def test_open_meteo_snow_condition_label(use_open_meteo, monkeypatch):
-    monkeypatch.setattr(wom, "_geocode_city", _geo_rome)
+    monkeypatch.setattr(normalizer_module, "_geocode_query", _query_rome)
     monkeypatch.setattr(wom, "_fetch_current_weather", _weather_cold)
     result = await dispatcher.dispatch(ToolRequest(
         tool_name="weather_lookup", args={"city": "Rome"},
@@ -182,7 +190,7 @@ async def test_open_meteo_snow_condition_label(use_open_meteo, monkeypatch):
 # ── Missing city ──────────────────────────────────────────────────────────────
 
 async def test_open_meteo_missing_city_returns_missing_args(use_open_meteo, monkeypatch):
-    monkeypatch.setattr(wom, "_geocode_city", _geo_paris)
+    monkeypatch.setattr(normalizer_module, "_geocode_query", _query_paris)
     monkeypatch.setattr(wom, "_fetch_current_weather", _weather_ok)
     result = await dispatcher.dispatch(ToolRequest(tool_name="weather_lookup"))
     assert result.status == ToolStatus.missing_args
@@ -191,7 +199,7 @@ async def test_open_meteo_missing_city_returns_missing_args(use_open_meteo, monk
 # ── Geocode not found ─────────────────────────────────────────────────────────
 
 async def test_geocode_not_found_returns_error(use_open_meteo, monkeypatch):
-    monkeypatch.setattr(wom, "_geocode_city", _geo_none)
+    monkeypatch.setattr(normalizer_module, "_geocode_query", _query_none)
     monkeypatch.setattr(wom, "_fetch_current_weather", _weather_ok)
     result = await dispatcher.dispatch(ToolRequest(
         tool_name="weather_lookup", args={"city": "Nonexistentia"},
@@ -200,7 +208,7 @@ async def test_geocode_not_found_returns_error(use_open_meteo, monkeypatch):
 
 
 async def test_geocode_not_found_reply_names_the_city(use_open_meteo, monkeypatch):
-    monkeypatch.setattr(wom, "_geocode_city", _geo_none)
+    monkeypatch.setattr(normalizer_module, "_geocode_query", _query_none)
     monkeypatch.setattr(wom, "_fetch_current_weather", _weather_ok)
     result = await dispatcher.dispatch(ToolRequest(
         tool_name="weather_lookup", args={"city": "Nonexistentia"},
@@ -211,7 +219,7 @@ async def test_geocode_not_found_reply_names_the_city(use_open_meteo, monkeypatc
 # ── Geocode raises ────────────────────────────────────────────────────────────
 
 async def test_geocode_raises_returns_error(use_open_meteo, monkeypatch):
-    monkeypatch.setattr(wom, "_geocode_city", _geo_raise)
+    monkeypatch.setattr(normalizer_module, "_geocode_query", _query_raise)
     monkeypatch.setattr(wom, "_fetch_current_weather", _weather_ok)
     result = await dispatcher.dispatch(ToolRequest(
         tool_name="weather_lookup", args={"city": "Rome"},
@@ -220,9 +228,8 @@ async def test_geocode_raises_returns_error(use_open_meteo, monkeypatch):
 
 
 async def test_geocode_raises_no_raw_exception_escapes(use_open_meteo, monkeypatch):
-    monkeypatch.setattr(wom, "_geocode_city", _geo_raise)
+    monkeypatch.setattr(normalizer_module, "_geocode_query", _query_raise)
     monkeypatch.setattr(wom, "_fetch_current_weather", _weather_ok)
-    # Must return a ToolResult, not raise
     result = await dispatcher.dispatch(ToolRequest(
         tool_name="weather_lookup", args={"city": "Rome"},
     ))
@@ -230,7 +237,7 @@ async def test_geocode_raises_no_raw_exception_escapes(use_open_meteo, monkeypat
 
 
 async def test_geocode_raises_reply_is_user_friendly(use_open_meteo, monkeypatch):
-    monkeypatch.setattr(wom, "_geocode_city", _geo_raise)
+    monkeypatch.setattr(normalizer_module, "_geocode_query", _query_raise)
     monkeypatch.setattr(wom, "_fetch_current_weather", _weather_ok)
     result = await dispatcher.dispatch(ToolRequest(
         tool_name="weather_lookup", args={"city": "Rome"},
@@ -241,7 +248,7 @@ async def test_geocode_raises_reply_is_user_friendly(use_open_meteo, monkeypatch
 # ── Forecast raises ───────────────────────────────────────────────────────────
 
 async def test_forecast_raises_returns_error(use_open_meteo, monkeypatch):
-    monkeypatch.setattr(wom, "_geocode_city", _geo_rome)
+    monkeypatch.setattr(normalizer_module, "_geocode_query", _query_rome)
     monkeypatch.setattr(wom, "_fetch_current_weather", _weather_raise)
     result = await dispatcher.dispatch(ToolRequest(
         tool_name="weather_lookup", args={"city": "Rome"},
@@ -250,7 +257,7 @@ async def test_forecast_raises_returns_error(use_open_meteo, monkeypatch):
 
 
 async def test_forecast_raises_no_raw_exception_escapes(use_open_meteo, monkeypatch):
-    monkeypatch.setattr(wom, "_geocode_city", _geo_rome)
+    monkeypatch.setattr(normalizer_module, "_geocode_query", _query_rome)
     monkeypatch.setattr(wom, "_fetch_current_weather", _weather_raise)
     result = await dispatcher.dispatch(ToolRequest(
         tool_name="weather_lookup", args={"city": "Rome"},
@@ -259,7 +266,7 @@ async def test_forecast_raises_no_raw_exception_escapes(use_open_meteo, monkeypa
 
 
 async def test_forecast_raises_reply_is_user_friendly(use_open_meteo, monkeypatch):
-    monkeypatch.setattr(wom, "_geocode_city", _geo_rome)
+    monkeypatch.setattr(normalizer_module, "_geocode_query", _query_rome)
     monkeypatch.setattr(wom, "_fetch_current_weather", _weather_raise)
     result = await dispatcher.dispatch(ToolRequest(
         tool_name="weather_lookup", args={"city": "Rome"},
@@ -293,15 +300,15 @@ async def test_no_real_http_called(use_open_meteo, monkeypatch):
     """Verify both helpers are called via monkeypatch, not real httpx."""
     called: list[str] = []
 
-    async def _track_geo(city):
+    async def _track_query(query):
         called.append("geo")
-        return (51.51, -0.12, "London")
+        return [{"name": "London", "latitude": 51.51, "longitude": -0.12}]
 
     async def _track_weather(lat, lon):
         called.append("weather")
         return {"current": {"temperature_2m": 15.0, "weather_code": 0, "wind_speed_10m": 8.0}}
 
-    monkeypatch.setattr(wom, "_geocode_city", _track_geo)
+    monkeypatch.setattr(normalizer_module, "_geocode_query", _track_query)
     monkeypatch.setattr(wom, "_fetch_current_weather", _track_weather)
 
     await dispatcher.dispatch(ToolRequest(

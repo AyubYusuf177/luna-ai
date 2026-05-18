@@ -1,22 +1,22 @@
 """
 luna/tools/providers/weather_open_meteo.py — Real weather via Open-Meteo.
 
-Two module-level async helpers (_geocode_city, _fetch_current_weather) handle
-all network I/O. They are kept separate from run() so tests can monkeypatch
-them without touching httpx at all.
+Location resolution is delegated to luna.location.normalizer so that all
+tools share a single geocoding path. This provider owns only the
+weather-specific forecast call (_fetch_current_weather).
 
-Open-Meteo is free, global, and requires no API key for basic use.
+_fetch_current_weather is module-level so tests can monkeypatch it without
+touching httpx. Geocoding is patched via normalizer._geocode_query.
 """
 
 import httpx
 
+from luna.location.normalizer import normalize_location
 from luna.tools.schemas import ToolRequest, ToolResult, ToolStatus
 
-_GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
 # WMO weather interpretation codes → human label.
-# Unmapped codes fall back to "Variable conditions".
 _WMO_LABELS: dict[int, str] = {
     0: "Clear sky",
     1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
@@ -33,24 +33,6 @@ _WMO_LABELS: dict[int, str] = {
 
 def _weather_label(code: int) -> str:
     return _WMO_LABELS.get(code, "Variable conditions")
-
-
-async def _geocode_city(city: str) -> tuple[float, float, str] | None:
-    """
-    Return (latitude, longitude, resolved_name) for city, or None if not found.
-    Raises httpx.HTTPStatusError / httpx.TransportError on network failure.
-    """
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(
-            _GEOCODE_URL,
-            params={"name": city, "count": 1, "language": "en", "format": "json"},
-        )
-        response.raise_for_status()
-    results = response.json().get("results") or []
-    if not results:
-        return None
-    r = results[0]
-    return r["latitude"], r["longitude"], r.get("name", city)
 
 
 async def _fetch_current_weather(lat: float, lon: float) -> dict:
@@ -88,19 +70,26 @@ async def run(request: ToolRequest) -> ToolResult:
         )
 
     try:
-        geo = await _geocode_city(city)
-        if geo is None:
+        loc_result = await normalize_location(city)
+        if not loc_result.success:
+            if loc_result.error_code == "not_found":
+                reply_text = (
+                    f"I couldn't find weather data for '{city}'. "
+                    "Try a more specific city name."
+                )
+            else:
+                reply_text = (
+                    "Weather data is temporarily unavailable. "
+                    "Please try again shortly."
+                )
             return ToolResult(
                 tool_name="weather_lookup",
                 status=ToolStatus.error,
-                reply_text=(
-                    f"I couldn't find weather data for '{city}'. "
-                    "Try a more specific city name."
-                ),
+                reply_text=reply_text,
             )
-        lat, lon, resolved_name = geo
 
-        weather_data = await _fetch_current_weather(lat, lon)
+        loc = loc_result.location
+        weather_data = await _fetch_current_weather(loc.latitude, loc.longitude)
         current = weather_data["current"]
         temp = current["temperature_2m"]
         code = current["weather_code"]
@@ -111,15 +100,15 @@ async def run(request: ToolRequest) -> ToolResult:
             tool_name="weather_lookup",
             status=ToolStatus.ok,
             data={
-                "city": resolved_name,
-                "latitude": lat,
-                "longitude": lon,
+                "city": loc.name,
+                "latitude": loc.latitude,
+                "longitude": loc.longitude,
                 "temperature_c": temp,
                 "weather_code": code,
                 "condition": label,
                 "wind_speed_kmh": wind,
             },
-            reply_text=f"{resolved_name}: {label}, {temp}°C, wind {wind} km/h.",
+            reply_text=f"{loc.name}: {label}, {temp}°C, wind {wind} km/h.",
         )
     except Exception as exc:
         return ToolResult(

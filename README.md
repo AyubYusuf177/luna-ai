@@ -132,6 +132,7 @@ ProactiveCandidate
 | v0.1.1  | Twilio SMS hardening — TwiML responses, ngrok guide | ✅ Done |
 | v0.2.0  | Claude-powered structured planner | ✅ Done |
 | v0.3.0  | Real weather via Open-Meteo (async httpx, mock/real switchable) | ✅ Done |
+| v0.3.1  | Shared location normalizer (luna/location/), weather delegates geocoding | ✅ Done |
 
 ---
 
