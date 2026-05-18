@@ -52,7 +52,7 @@ async def simulate(request: SimulateRequest) -> SimulateResponse:
         from_number=request.from_number,
         body=request.body,
     )
-    reply = event_gateway.handle(event)
+    reply = await event_gateway.handle(event)
     return SimulateResponse(from_number=request.from_number, reply=reply)
 
 
@@ -132,7 +132,7 @@ async def twilio_sms_webhook(request: Request) -> Response:
         body=body,
         raw_payload=form_data,
     )
-    reply = event_gateway.handle(event)
+    reply = await event_gateway.handle(event)
 
     # Return TwiML so Twilio delivers the reply directly from the response body.
     # This works without any outbound API credentials and is the recommended

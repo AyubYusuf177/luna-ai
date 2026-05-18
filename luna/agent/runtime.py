@@ -33,7 +33,7 @@ from luna.tools import dispatcher
 from luna.tools.schemas import ToolRequest, ToolStatus
 
 
-def handle(event: InternalEvent) -> str:
+async def handle(event: InternalEvent) -> str:
     """
     Run the agent loop for one InternalEvent and return Luna's SMS reply.
 
@@ -60,12 +60,12 @@ def handle(event: InternalEvent) -> str:
 
     if inbound_decision.command in ("stop", "start"):
         events.log("policy_command", user_id, {"command": inbound_decision.command})
-        return _send(user_id, inbound_decision.rewritten_reply)
+        return await _send(user_id, inbound_decision.rewritten_reply)
 
     # ── Step 5: Policy — sensitive data block ────────────────────────────────
     if not inbound_decision.allowed:
         events.log("policy_blocked_inbound", user_id, {"reason": inbound_decision.reason})
-        return _send(user_id, inbound_decision.rewritten_reply)
+        return await _send(user_id, inbound_decision.rewritten_reply)
 
     # ── Step 6: Confirmation — YES / NO resolution ────────────────────────────
     confirmation_result = confirmation_resolver.resolve_inbound(user_id, body)
@@ -76,7 +76,7 @@ def handle(event: InternalEvent) -> str:
             else "no_pending"
         )
         events.log("confirmation_resolved", user_id, {"status": status})
-        return _send(user_id, confirmation_result.reply)
+        return await _send(user_id, confirmation_result.reply)
 
     # ── Step 7: List active tasks ─────────────────────────────────────────────
     active_tasks = task_manager.list_active_tasks(user_id)
@@ -109,7 +109,7 @@ def handle(event: InternalEvent) -> str:
     tool_result = None
     if plan.selected_tools:
         tool_name = plan.selected_tools[0]
-        tool_result = dispatcher.dispatch(ToolRequest(
+        tool_result = await dispatcher.dispatch(ToolRequest(
             tool_name=tool_name,
             args=plan.known_fields,
         ))
@@ -143,7 +143,7 @@ def handle(event: InternalEvent) -> str:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _send(user_id: str, reply: str) -> str:
+async def _send(user_id: str, reply: str) -> str:
     """Compose, log, and return a reply for early-exit paths."""
     composed = composer.compose(reply)
     memory.append_turn(user_id, "luna", composed.body)

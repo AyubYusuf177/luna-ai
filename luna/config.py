@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     # Path to the SQLite database file. Ignored when luna_memory_backend=in_memory.
     luna_db_path: str = "./data/luna.db"
 
+    # Weather — v0.3.0
+    # "mock": fixture data, no network (default for tests/dev)
+    # "open_meteo": real Open-Meteo API, no API key required
+    weather_provider: str = "mock"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

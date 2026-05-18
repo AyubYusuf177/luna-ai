@@ -131,6 +131,7 @@ ProactiveCandidate
 | v0.1.0  | Demo-ready — hardening, README, demo script | ✅ Done |
 | v0.1.1  | Twilio SMS hardening — TwiML responses, ngrok guide | ✅ Done |
 | v0.2.0  | Claude-powered structured planner | ✅ Done |
+| v0.3.0  | Real weather via Open-Meteo (async httpx, mock/real switchable) | ✅ Done |
 
 ---
 

@@ -97,34 +97,34 @@ def test_twilio_normalize_preserves_raw_payload():
 
 # ── Event Gateway — unit tests ────────────────────────────────────────────────
 
-def test_event_gateway_returns_string_reply():
+async def test_event_gateway_returns_string_reply():
     event = simulator_channel.normalize(from_number=_NUMBER, body="hello")
-    reply = event_gateway.handle(event)
+    reply = await event_gateway.handle(event)
     assert isinstance(reply, str)
     assert len(reply) > 0
 
 
-def test_event_gateway_logs_internal_event_received():
+async def test_event_gateway_logs_internal_event_received():
     event = simulator_channel.normalize(from_number=_NUMBER, body="hello")
-    event_gateway.handle(event)
+    await event_gateway.handle(event)
     log_types = [e.event_type for e in events.get_log()]
     assert "internal_event_received" in log_types
 
 
-def test_event_gateway_logs_correct_source():
+async def test_event_gateway_logs_correct_source():
     event = simulator_channel.normalize(from_number=_NUMBER, body="hello")
-    event_gateway.handle(event)
+    await event_gateway.handle(event)
     gateway_events = [
         e for e in events.get_log() if e.event_type == "internal_event_received"
     ]
     assert gateway_events[0].metadata["source"] == EventSource.simulate_inbound
 
 
-def test_event_gateway_handles_sms_inbound_event():
+async def test_event_gateway_handles_sms_inbound_event():
     """Gateway must handle events from any source, not just simulate_inbound."""
     event = twilio_channel.normalize(
         from_number=_NUMBER, body="hotel in Rome", raw_payload={"From": _NUMBER, "Body": "hotel in Rome"}
     )
-    reply = event_gateway.handle(event)
+    reply = await event_gateway.handle(event)
     assert isinstance(reply, str)
     assert len(reply) > 0

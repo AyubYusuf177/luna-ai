@@ -16,7 +16,7 @@ from luna.events import logger as events
 from luna.gateway.schemas import InternalEvent
 
 
-def handle(event: InternalEvent) -> str:
+async def handle(event: InternalEvent) -> str:
     """
     Receive an InternalEvent and return Luna's reply as a plain string.
 
@@ -33,4 +33,4 @@ def handle(event: InternalEvent) -> str:
         },
     )
 
-    return agent_runtime.handle(event)
+    return await agent_runtime.handle(event)

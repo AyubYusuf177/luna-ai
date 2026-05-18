@@ -106,8 +106,8 @@ def test_registry_tool_is_enabled():
 
 # ── Dispatcher ────────────────────────────────────────────────────────────────
 
-def test_dispatcher_weather_lookup_ok():
-    result = dispatcher.dispatch(ToolRequest(
+async def test_dispatcher_weather_lookup_ok():
+    result = await dispatcher.dispatch(ToolRequest(
         tool_name="weather_lookup",
         args={"city": "Rome"},
     ))
@@ -115,13 +115,13 @@ def test_dispatcher_weather_lookup_ok():
     assert "Rome" in result.reply_text
 
 
-def test_dispatcher_weather_lookup_missing_args():
-    result = dispatcher.dispatch(ToolRequest(tool_name="weather_lookup"))
+async def test_dispatcher_weather_lookup_missing_args():
+    result = await dispatcher.dispatch(ToolRequest(tool_name="weather_lookup"))
     assert result.status == ToolStatus.missing_args
 
 
-def test_dispatcher_flight_search_ok():
-    result = dispatcher.dispatch(ToolRequest(
+async def test_dispatcher_flight_search_ok():
+    result = await dispatcher.dispatch(ToolRequest(
         tool_name="flight_search",
         args={"origin": "London", "destination": "Tokyo"},
     ))
@@ -130,16 +130,16 @@ def test_dispatcher_flight_search_ok():
     assert "Tokyo" in result.reply_text
 
 
-def test_dispatcher_flight_search_missing_args():
-    result = dispatcher.dispatch(ToolRequest(
+async def test_dispatcher_flight_search_missing_args():
+    result = await dispatcher.dispatch(ToolRequest(
         tool_name="flight_search",
         args={"origin": "London"},
     ))
     assert result.status == ToolStatus.missing_args
 
 
-def test_dispatcher_hotel_search_ok():
-    result = dispatcher.dispatch(ToolRequest(
+async def test_dispatcher_hotel_search_ok():
+    result = await dispatcher.dispatch(ToolRequest(
         tool_name="hotel_search",
         args={"city": "Paris"},
     ))
@@ -147,13 +147,13 @@ def test_dispatcher_hotel_search_ok():
     assert "Paris" in result.reply_text
 
 
-def test_dispatcher_hotel_search_missing_args():
-    result = dispatcher.dispatch(ToolRequest(tool_name="hotel_search"))
+async def test_dispatcher_hotel_search_missing_args():
+    result = await dispatcher.dispatch(ToolRequest(tool_name="hotel_search"))
     assert result.status == ToolStatus.missing_args
 
 
-def test_dispatcher_events_search_ok():
-    result = dispatcher.dispatch(ToolRequest(
+async def test_dispatcher_events_search_ok():
+    result = await dispatcher.dispatch(ToolRequest(
         tool_name="events_search",
         args={"city": "Madrid"},
     ))
@@ -161,26 +161,26 @@ def test_dispatcher_events_search_ok():
     assert "Madrid" in result.reply_text
 
 
-def test_dispatcher_events_search_missing_args():
-    result = dispatcher.dispatch(ToolRequest(tool_name="events_search"))
+async def test_dispatcher_events_search_missing_args():
+    result = await dispatcher.dispatch(ToolRequest(tool_name="events_search"))
     assert result.status == ToolStatus.missing_args
 
 
-def test_dispatcher_unknown_tool_returns_error():
-    result = dispatcher.dispatch(ToolRequest(tool_name="does_not_exist"))
+async def test_dispatcher_unknown_tool_returns_error():
+    result = await dispatcher.dispatch(ToolRequest(tool_name="does_not_exist"))
     assert result.status == ToolStatus.error
 
 
-def test_dispatcher_returns_tool_result_instance():
-    result = dispatcher.dispatch(ToolRequest(
+async def test_dispatcher_returns_tool_result_instance():
+    result = await dispatcher.dispatch(ToolRequest(
         tool_name="weather_lookup",
         args={"city": "Berlin"},
     ))
     assert isinstance(result, ToolResult)
 
 
-def test_dispatcher_ok_result_has_data():
-    result = dispatcher.dispatch(ToolRequest(
+async def test_dispatcher_ok_result_has_data():
+    result = await dispatcher.dispatch(ToolRequest(
         tool_name="weather_lookup",
         args={"city": "Berlin"},
     ))
