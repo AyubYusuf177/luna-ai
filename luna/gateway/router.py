@@ -15,13 +15,10 @@ Channel adapters and the Event Gateway contain all logic.
 This router stays thin.
 """
 
-from xml.sax.saxutils import escape as _xml_escape
-
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from luna.channels import simulator as simulator_channel
 from luna.channels import twilio as twilio_channel
-from luna.config import settings
 from luna.events import logger as events
 from luna.gateway import event_gateway
 from luna.gateway.schemas import (
@@ -103,42 +100,13 @@ async def twilio_sms_webhook(request: Request) -> Response:
     """
     Twilio inbound SMS webhook.
 
-    Twilio sends a form-encoded POST on every inbound SMS. This endpoint:
-      1. Reads the form payload once.
-      2. Validates the X-Twilio-Signature header (when TWILIO_VALIDATE_SIGNATURES=true).
-      3. Normalizes to InternalEvent via the Twilio channel adapter.
-      4. Routes through the Event Gateway.
-      5. Returns a TwiML <Response><Message> body — Twilio delivers the reply
-         automatically from the response body. No outbound API credentials required.
-
+    Delegates all Twilio-specific concerns (field extraction, signature
+    validation, TwiML formatting) to the Twilio channel adapter.
     Point ngrok at this endpoint for real SMS testing:
       POST https://<ngrok-id>.ngrok-free.app/twilio/sms
     """
-    form_data = dict(await request.form())
-    from_number = form_data.get("From", "")
-    body = form_data.get("Body", "")
-
-    if not from_number:
-        raise HTTPException(status_code=400, detail="Missing 'From' field in Twilio payload")
-
-    # Validate X-Twilio-Signature when required by config
-    if settings.twilio_validate_signatures:
-        signature = request.headers.get("X-Twilio-Signature", "")
-        if not twilio_channel.signature_is_valid(str(request.url), form_data, signature):
-            raise HTTPException(status_code=403, detail="Invalid Twilio signature")
-
-    event = twilio_channel.normalize(
-        from_number=from_number,
-        body=body,
-        raw_payload=form_data,
-    )
+    event, err = await twilio_channel.parse_request(request)
+    if err:
+        raise HTTPException(**err)
     reply = await event_gateway.handle(event)
-
-    # Return TwiML so Twilio delivers the reply directly from the response body.
-    # This works without any outbound API credentials and is the recommended
-    # approach for synchronous request-response SMS flows.
-    twiml = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        f"<Response><Message>{_xml_escape(reply)}</Message></Response>"
-    )
-    return Response(content=twiml, media_type="text/xml; charset=utf-8")
+    return twilio_channel.format_response(reply)

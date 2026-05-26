@@ -50,12 +50,13 @@ Luna AI is an SMS-native agentic travel operator.
 | v0.2.2 | Planner observability — planner_run event, cost estimator, retry/fallback tracing |
 | v0.3.0 | Real weather tool — Open-Meteo via async httpx, WEATHER_PROVIDER flag |
 | v0.3.1 | Shared location normalizer — luna/location/, weather delegates geocoding |
+| v0.3.2 | Messaging provider abstraction — Twilio adapter owns parse/validate/format; router is thin |
 
 ---
 
 ## 4. Current Verified State
 
-- v0.3.1 committed and pushed to `main`.
+- v0.3.2 committed and pushed to `main`.
 - Claude planner verified with a real Anthropic API key. Three manual tests passed:
   - "somewhere warm for 4 days in June under £500, not Spain" → extracted constraints, asked for origin.
   - "I land in Rome at 9pm, find me a hotel near the station and something relaxed the next morning" → asked for arrival date and stay length.

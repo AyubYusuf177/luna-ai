@@ -186,3 +186,29 @@ async def test_no_twilio_api_calls_without_credentials():
         response = await client.post("/twilio/sms", data=_FORM)
 
     assert response.status_code == 200  # completed without any API error
+
+
+# ── format_response() unit tests ──────────────────────────────────────────────
+
+def test_format_response_content_type_is_xml():
+    from luna.channels.twilio import format_response
+    response = format_response("hello")
+    assert "xml" in response.media_type.lower()
+
+
+def test_format_response_contains_response_tag():
+    from luna.channels.twilio import format_response
+    assert b"<Response>" in format_response("hello").body
+
+
+def test_format_response_contains_message_tag():
+    from luna.channels.twilio import format_response
+    assert b"<Message>" in format_response("hello").body
+
+
+def test_format_response_escapes_special_characters():
+    from luna.channels.twilio import format_response
+    body = format_response("<test> & 'quote'").body
+    assert b"<test>" not in body
+    assert b"&amp;" in body
+    assert b"&lt;" in body
