@@ -18,6 +18,7 @@ This router stays thin.
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from luna.channels import simulator as simulator_channel
+from luna.channels import telnyx as telnyx_channel
 from luna.channels import twilio as twilio_channel
 from luna.events import logger as events
 from luna.gateway import event_gateway
@@ -110,3 +111,25 @@ async def twilio_sms_webhook(request: Request) -> Response:
         raise HTTPException(**err)
     reply = await event_gateway.handle(event)
     return twilio_channel.format_response(reply)
+
+
+# ── /telnyx/sms — Telnyx inbound SMS webhook ──────────────────────────────────
+
+@router.post("/telnyx/sms", tags=["channels"])
+async def telnyx_sms_webhook(request: Request) -> Response:
+    """
+    Telnyx inbound SMS webhook.
+
+    Telnyx sends a JSON POST. Non-message events are acknowledged and ignored.
+    Replies are sent via the Telnyx Messages API (no TwiML equivalent).
+    Point ngrok at this endpoint for Telnyx SMS testing:
+      POST https://<ngrok-id>.ngrok-free.app/telnyx/sms
+    """
+    event, err = await telnyx_channel.parse_request(request)
+    if err:
+        raise HTTPException(**err)
+    if event is None:  # non-message.received event — ack and ignore
+        return Response(content='{}', media_type='application/json')
+    reply = await event_gateway.handle(event)
+    await telnyx_channel.send_reply(to=event.user_id, body=reply)
+    return Response(content='{}', media_type='application/json')

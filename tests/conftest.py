@@ -41,12 +41,14 @@ def _safe_settings():
         "anthropic_api_key": s.anthropic_api_key,
         "twilio_account_sid": s.twilio_account_sid,
         "twilio_auth_token": s.twilio_auth_token,
+        "telnyx_api_key": s.telnyx_api_key,
         "weather_provider": s.weather_provider,
     }
     s.use_claude_planner = False
     s.anthropic_api_key = ""
     s.twilio_account_sid = ""
     s.twilio_auth_token = ""
+    s.telnyx_api_key = ""
     s.weather_provider = "mock"
     yield
     for attr, val in saved.items():

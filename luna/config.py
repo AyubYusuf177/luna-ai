@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     # Path to the SQLite database file. Ignored when luna_memory_backend=in_memory.
     luna_db_path: str = "./data/luna.db"
 
+    # Telnyx — v0.3.3
+    telnyx_api_key: str = ""
+    telnyx_phone_number: str = ""  # E.164, e.g. +16284321017
+
     # Weather — v0.3.0
     # "mock": fixture data, no network (default for tests/dev)
     # "open_meteo": real Open-Meteo API, no API key required
