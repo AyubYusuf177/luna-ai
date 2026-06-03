@@ -1,5 +1,20 @@
 {
   "name": "@luna/tokens",
   "version": "0.0.0",
-  "private": true
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --emitDeclarationOnly --outDir dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tamagui/core": "1.144.4"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
 }

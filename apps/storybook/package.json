@@ -1,5 +1,30 @@
 {
   "name": "@luna/storybook",
   "version": "0.0.0",
-  "private": true
+  "private": true,
+  "scripts": {
+    "dev": "storybook dev -p 6006",
+    "build": "storybook build",
+    "storybook": "storybook dev -p 6006",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@luna/tokens": "workspace:*",
+    "@luna/ui": "workspace:*",
+    "@storybook/addon-essentials": "8.6.18",
+    "@storybook/addon-themes": "8.6.18",
+    "@storybook/react": "8.6.18",
+    "@storybook/react-vite": "8.6.18",
+    "@tamagui/core": "1.144.4",
+    "@tamagui/vite-plugin": "1.144.4",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "storybook": "8.6.18",
+    "vite": "5.4.21"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.30",
+    "@types/react-dom": "18.3.7",
+    "typescript": "5.9.3"
+  }
 }
