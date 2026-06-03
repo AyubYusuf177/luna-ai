@@ -1,5 +1,29 @@
 {
   "name": "@luna/mobile",
   "version": "0.0.0",
-  "private": true
+  "private": true,
+  "main": "expo-router/entry",
+  "scripts": {
+    "dev": "expo start",
+    "ios": "expo start --ios",
+    "android": "expo start --android",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@luna/tokens": "workspace:*",
+    "@luna/ui": "workspace:*",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@tamagui/babel-plugin": "1.144.4",
+    "@tamagui/core": "1.144.4",
+    "expo": "52.0.49",
+    "expo-router": "4.0.22",
+    "expo-status-bar": "2.0.1",
+    "react": "18.3.1",
+    "react-native": "0.76.9"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.30",
+    "typescript": "5.9.3"
+  }
 }
